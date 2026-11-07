@@ -1,0 +1,7 @@
+{
+  "name": "ticketing-system-event",
+  "private": true,
+  "scripts": {
+    "dev": "npx -y serve@14.2.4 web -l 5173"
+  }
+}

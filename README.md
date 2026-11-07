@@ -38,7 +38,7 @@ App users still see only their own tickets, so guest tickets never appear in any
 ## Run locally
 
 ```
-npx -y serve web -l 5173
+npm run dev
 ```
 Then open `http://localhost:5173/admin.html`. Ticket links use the clean `/t/<token>` form, which only works on Vercel. Locally, open `ticket.html?t=<token>` instead.
 
