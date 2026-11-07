@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Safety Event Ticket</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+  <script src="/config.js"></script>
+  <script src="/lib.js"></script>
+</head>
+<body class="ticket-page">
+<main>
+  <div id="view" class="muted-on-blue">Loading… · جارٍ التحميل…</div>
+</main>
+<script>
+(async function () {
+  const { db, $, esc, fmtDate } = T;
+  const view = $('#view');
+  const token = (location.pathname.match(/\/t\/([0-9a-f]+)/i) || [])[1]
+    || new URLSearchParams(location.search).get('t');
+
+  function fail(en, ar) {
+    view.innerHTML = `<div class="card" style="text-align:center"><b>${en}</b><br><span dir="rtl">${ar}</span></div>`;
+  }
+  if (!token) return fail('Ticket link is missing.', 'رابط التذكرة غير مكتمل.');
+
+  const { data, error } = await db.rpc('invite_get_ticket', { p_link_token: token });
+  if (error) return fail('Could not load the ticket. Try again.', 'تعذّر تحميل التذكرة، حاول مرة أخرى.');
+  const t = data && data[0];
+  if (!t) return fail('This ticket link is not valid.', 'رابط التذكرة غير صالح.');
+
+  let banner = '';
+  if (t.status === 'redeemed') {
+    banner = `<div class="status-banner redeemed">Checked in · تم الدخول<br><small>${esc(fmtDate(t.redeemed_at))}</small></div>`;
+  } else if (t.status === 'cancelled') {
+    banner = `<div class="status-banner cancelled">This ticket was cancelled · تم إلغاء هذه التذكرة</div>`;
+  }
+
+  let qrHtml = '';
+  if (t.qr_token) {
+    const qr = qrcode(0, 'M');
+    qr.addData(t.qr_token);
+    qr.make();
+    qrHtml = `<div class="qr">${qr.createSvgTag({ cellSize: 6, margin: 0, scalable: true })}</div>`;
+  }
+
+  view.className = '';
+  view.innerHTML = `
+    <div class="ticket">
+      <img class="ticket-art" src="/brand/hero.webp" width="1400" height="700"
+           alt="JESCO and ArcelorMittal Tubular Products Al-Jubail. Learn it, Live it, Prove it, take it back to the line">
+      <div class="ticket-head">
+        <h1>${esc(t.event_name)}</h1>
+        ${t.event_name_ar ? `<div dir="rtl">${esc(t.event_name_ar)}</div>` : ''}
+        <div class="rule"></div>
+      </div>
+      <div class="ticket-body">
+        ${banner}
+        ${qrHtml}
+        <div class="guest">${esc(t.guest_name)}</div>
+        <div class="muted">Show this code at the entrance<br><span dir="rtl">أبرز هذا الرمز عند الدخول</span></div>
+      </div>
+      <div class="perf"></div>
+      <div class="ticket-foot">
+        ${t.starts_at ? `<div>🗓 ${esc(fmtDate(t.starts_at))}</div>` : ''}
+        ${t.venue ? `<div>📍 ${esc(t.venue)}${t.venue_ar ? ` · <span dir="rtl">${esc(t.venue_ar)}</span>` : ''}</div>` : ''}
+        <div class="muted" style="margin-top:10px">Personal ticket, valid for one entry. Do not share this link.<br>
+          <span dir="rtl">تذكرة شخصية صالحة لدخول واحد، لا تشارك هذا الرابط.</span></div>
+      </div>
+    </div>`;
+})();
+</script>
+</body>
+</html>

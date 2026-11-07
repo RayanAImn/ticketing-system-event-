@@ -1,0 +1,17 @@
+{
+  "outputDirectory": "web",
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/t/:token", "destination": "/ticket.html" },
+    { "source": "/", "destination": "/admin.html" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "X-Robots-Tag", "value": "noindex" }
+      ]
+    }
+  ]
+}

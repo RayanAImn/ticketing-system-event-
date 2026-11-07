@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Guest Tickets Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="/config.js"></script>
+  <script src="/lib.js"></script>
+</head>
+<body>
+<header class="brandbar"><div class="inner"><img src="/brand/jesco.png" alt="JESCO"><img class="am" src="/brand/arcelormittal.png" alt="ArcelorMittal Tubular Products Al-Jubail"><span class="title">Safety Event · Guests</span></div></header>
+<main>
+  <form id="login" class="card login" hidden>
+    <h1>Admin sign in</h1>
+    <div class="field"><label>Email</label><input name="email" type="email" required autocomplete="username"></div>
+    <div class="field"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div>
+    <button class="primary" style="width:100%">Sign in</button>
+    <p class="login-error"></p>
+  </form>
+
+  <div id="app" hidden>
+    <div class="row" style="margin-bottom:16px">
+      <h1 style="margin:0">Guest tickets</h1>
+      <span class="spacer"></span>
+      <a class="btn small" href="/scan">Scanner</a>
+      <button class="small" id="signout">Sign out</button>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div class="field" style="margin:0"><label>Event</label><select id="event"></select></div>
+      </div>
+      <p class="muted" style="margin:10px 0 0; font-size:.88rem">Events come from the visit admin dashboard:
+        create the event there with status <b>Draft</b>, booking mode <b>Ticket</b> and no price.
+        Draft events never appear in the visit app.</p>
+    </div>
+
+    <div id="eventArea" hidden>
+      <div class="stats">
+        <div class="stat"><span class="muted">Invited</span><b id="sTotal">0</b></div>
+        <div class="stat"><span class="muted">Checked in</span><b id="sIn">0</b></div>
+        <div class="stat"><span class="muted">Not yet</span><b id="sOut">0</b></div>
+        <div class="stat"><span class="muted">Cancelled</span><b id="sCancel">0</b></div>
+      </div>
+
+      <div class="card">
+        <h2>Add a guest</h2>
+        <form id="addGuest">
+          <div class="row">
+            <div class="field"><label>Name *</label><input name="name" required></div>
+            <div class="field"><label>Phone</label><input name="phone" placeholder="05xxxxxxxx"></div>
+            <div class="field"><label>Email</label><input name="email" type="email"></div>
+            <div class="field"><label>Note (shown to scanner)</label><input name="note" placeholder="e.g. VIP"></div>
+          </div>
+          <button class="primary">Create ticket</button>
+          <span class="error" id="addError"></span>
+        </form>
+        <details style="margin-top:16px">
+          <summary>Import a list</summary>
+          <p class="muted">One guest per line: <code>name, phone, email, note</code> (only name is required).
+            You can paste straight from Excel, or pick a .csv file.</p>
+          <textarea id="bulk" placeholder="Sara Alqahtani, 0551234567, sara@example.com, VIP&#10;Omar Alharbi, 0559876543"></textarea>
+          <div class="row" style="margin-top:8px">
+            <input type="file" id="csvFile" accept=".csv,.txt" style="width:auto">
+            <span class="spacer"></span>
+            <button class="primary" id="bulkBtn">Create tickets</button>
+          </div>
+          <p class="error" id="bulkError"></p>
+        </details>
+      </div>
+
+      <div class="card">
+        <div class="row" style="margin-bottom:12px">
+          <h2 style="margin:0">Guests</h2>
+          <span class="spacer"></span>
+          <input id="search" placeholder="Search name, phone, email" style="max-width:260px">
+          <button class="small" id="exportBtn">Export CSV</button>
+          <button class="small" id="refreshBtn">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Guest</th><th>Contact</th><th>Status</th><th>Send</th><th></th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+(function () {
+  const { db, $, esc, fmtDate, ticketUrl, setupLogin, signOut } = T;
+  let events = [], tickets = [];
+
+  const eventId = () => $('#event').value;
+
+  async function loadEvents() {
+    const { data, error } = await db.rpc('invite_list_events');
+    if (error) { alert(error.message); return; }
+    events = data;
+    $('#event').innerHTML = events.length
+      ? events.map((e) => `<option value="${e.id}">${esc(e.name)}${e.starts_at ? ' · ' + esc(fmtDate(e.starts_at)) : ''}</option>`).join('')
+      : '<option value="">No Draft free ticket events yet</option>';
+    loadTickets();
+  }
+
+  async function loadTickets() {
+    $('#eventArea').hidden = !eventId();
+    if (!eventId()) return;
+    // Supabase returns at most 1000 rows per request, so page through.
+    let all = [], from = 0;
+    for (;;) {
+      const { data, error } = await db.rpc('invite_list_tickets', { p_event_id: eventId() })
+        .range(from, from + 999);
+      if (error) { alert(error.message); return; }
+      all = all.concat(data);
+      if (data.length < 1000) break;
+      from += 1000;
+    }
+    tickets = all;
+    render();
+  }
+
+  function waLink(t) {
+    const text = `${window.APP_CONFIG.INVITE_MESSAGE}\n${ticketUrl(t.link_token)}`;
+    let phone = (t.guest_phone || '').replace(/\D/g, '');
+    if (phone.startsWith('00')) phone = phone.slice(2);
+    else if (phone.startsWith('05')) phone = '966' + phone.slice(1);
+    else if (phone.length === 9 && phone.startsWith('5')) phone = '966' + phone;
+    return `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
+  }
+
+  function render() {
+    const by = (s) => tickets.filter((t) => t.status === s).length;
+    $('#sTotal').textContent = tickets.length - by('cancelled');
+    $('#sIn').textContent = by('redeemed');
+    $('#sOut').textContent = by('active');
+    $('#sCancel').textContent = by('cancelled');
+
+    const q = $('#search').value.trim().toLowerCase();
+    const list = q
+      ? tickets.filter((t) => [t.guest_name, t.guest_phone, t.guest_email, t.guest_note]
+          .some((v) => (v || '').toLowerCase().includes(q)))
+      : tickets;
+
+    $('#rows').innerHTML = list.map((t) => {
+      const active = t.status === 'active';
+      const statusText = t.status === 'redeemed' ? `checked in<br><small class="muted">${esc(fmtDate(t.redeemed_at))}</small>` : t.status;
+      return `<tr data-id="${t.id}">
+        <td><b>${esc(t.guest_name)}</b>${t.guest_note ? `<br><small class="muted">${esc(t.guest_note)}</small>` : ''}</td>
+        <td>${esc(t.guest_phone || '')}${t.guest_email ? `<br><small class="muted">${esc(t.guest_email)}</small>` : ''}</td>
+        <td><span class="pill ${t.status}">${statusText}</span></td>
+        <td class="row">
+          ${t.status !== 'cancelled' ? `
+            <button class="small" data-act="copy">Copy link</button>
+            <a class="btn small" target="_blank" rel="noopener" href="${waLink(t)}">WhatsApp</a>
+            <a class="btn small" target="_blank" rel="noopener" href="${ticketUrl(t.link_token)}">Open</a>` : ''}
+        </td>
+        <td class="row">
+          ${active ? `<button class="small" data-act="regen" title="Old link and QR stop working">New link</button>
+                      <button class="small danger" data-act="cancel">Cancel</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('') || `<tr><td colspan="5" class="muted">No guests yet.</td></tr>`;
+  }
+
+  async function createTickets(guests) {
+    const { data, error } = await db.rpc('invite_create_tickets', { p_event_id: eventId(), p_guests: guests });
+    if (error) throw error;
+    await loadTickets();
+    return data;
+  }
+
+  // Accepts comma, semicolon or tab separated lines (tab = pasted from Excel).
+  function parseList(text) {
+    return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+      const sep = line.includes('\t') ? '\t' : line.includes(';') ? ';' : ',';
+      const [name, phone, email, note] = line.split(sep).map((c) => c.trim().replace(/^"|"$/g, ''));
+      return { name, phone, email, note };
+    }).filter((g) => g.name && !/^name$/i.test(g.name));
+  }
+
+  function exportCsv() {
+    const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [['name', 'phone', 'email', 'note', 'status', 'checked_in_at', 'link']]
+      .concat(tickets.map((t) => [t.guest_name, t.guest_phone, t.guest_email, t.guest_note, t.status,
+        t.redeemed_at || '', t.status === 'cancelled' ? '' : ticketUrl(t.link_token)]));
+    const blob = new Blob(['﻿' + lines.map((l) => l.map(cell).join(',')).join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'guests.csv';
+    a.click();
+  }
+
+  setupLogin({ form: $('#login'), app: $('#app'), allowed: ['admin'], onReady: () => loadEvents() });
+  $('#signout').onclick = signOut;
+  $('#event').onchange = loadTickets;
+  $('#refreshBtn').onclick = loadTickets;
+  $('#search').oninput = render;
+  $('#exportBtn').onclick = exportCsv;
+
+  $('#addGuest').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    $('#addError').textContent = '';
+    try {
+      await createTickets([{ name: f.name.value, phone: f.phone.value, email: f.email.value, note: f.note.value }]);
+      f.reset();
+      f.name.focus();
+    } catch (err) { $('#addError').textContent = err.message; }
+  };
+
+  $('#csvFile').onchange = async (e) => {
+    const file = e.target.files[0];
+    if (file) $('#bulk').value = (await file.text()).replace(/^﻿/, '');
+  };
+
+  $('#bulkBtn').onclick = async () => {
+    const guests = parseList($('#bulk').value);
+    $('#bulkError').textContent = '';
+    if (!guests.length) { $('#bulkError').textContent = 'No guests found in the list.'; return; }
+    if (!confirm(`Create ${guests.length} tickets?`)) return;
+    try {
+      const n = await createTickets(guests);
+      $('#bulk').value = '';
+      $('#bulkError').textContent = `Created ${n} tickets.`;
+    } catch (err) { $('#bulkError').textContent = err.message; }
+  };
+
+  $('#rows').onclick = async (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const t = tickets.find((x) => x.id === btn.closest('tr').dataset.id);
+    const act = btn.dataset.act;
+    if (act === 'copy') {
+      await navigator.clipboard.writeText(ticketUrl(t.link_token));
+      btn.textContent = 'Copied ✓';
+      setTimeout(() => { btn.textContent = 'Copy link'; }, 1500);
+      return;
+    }
+    const ask = act === 'cancel'
+      ? `Cancel ${t.guest_name}'s ticket? Their link and QR will stop working.`
+      : `Make a new link for ${t.guest_name}? The old link and QR stop working; send them the new one.`;
+    if (!confirm(ask)) return;
+    const fn = act === 'cancel' ? 'invite_cancel_ticket' : 'invite_regenerate_link';
+    const { error } = await db.rpc(fn, { p_ticket_id: t.id });
+    if (error) alert(error.message);
+    loadTickets();
+  };
+})();
+</script>
+</body>
+</html>

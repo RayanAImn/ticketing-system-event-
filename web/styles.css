@@ -1,0 +1,95 @@
+/* JESCO & ArcelorMittal Safety Event identity: event blue + white foundation,
+   safety orange for small emphasis, IBM Plex Sans Arabic. */
+:root {
+  --event-blue: #233D7C;
+  --safety-orange: #F05A22;
+  --bg: #f2f4f8;
+  --surface: #ffffff;
+  --ink: #1a2547;
+  --muted: #66708a;
+  --line: #dde2ec;
+  --brand: var(--event-blue);
+  --brand-ink: #ffffff;
+  --accent: var(--safety-orange);
+  --ok: #1f8a4c;
+  --warn: #c76a12;
+  --bad: #c0392b;
+  --radius: 14px;
+  font-family: "IBM Plex Sans Arabic", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); line-height: 1.45; }
+
+/* event header with the logo pair: JESCO left, ArcelorMittal right */
+.brandbar { background: var(--event-blue); padding: 14px 16px; }
+.brandbar .inner { max-width: 1000px; margin: 0 auto; display: flex; align-items: center; gap: 28px; }
+.brandbar img { height: 34px; width: auto; display: block; }
+.brandbar img.am { height: 42px; }
+.brandbar .title { margin-inline-start: auto; color: #fff; font-weight: 700; letter-spacing: .04em; font-size: .85rem; text-transform: uppercase; }
+.brandbar .title::before { content: ""; display: inline-block; width: 18px; height: 3px; background: var(--accent); vertical-align: middle; margin-inline-end: 8px; }
+@media (max-width: 520px) { .brandbar .title { display: none; } .brandbar img { height: 28px; } .brandbar img.am { height: 34px; } }
+main { max-width: 1000px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.4rem; margin: 0 0 16px; }
+h2 { font-size: 1.1rem; margin: 0 0 12px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+.muted { color: var(--muted); }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.spacer { flex: 1; }
+label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 4px; }
+input, select, textarea {
+  width: 100%; padding: 10px 12px; font: inherit; color: var(--ink);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+}
+textarea { min-height: 110px; font-family: ui-monospace, Consolas, monospace; font-size: .9rem; }
+.field { margin-bottom: 12px; flex: 1; min-width: 160px; }
+button, .btn {
+  font: inherit; padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+button.primary { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+.small { padding: 5px 9px; font-size: .85rem; }
+.login-error, .error { color: var(--bad); min-height: 1.2em; }
+.login { max-width: 380px; margin: 40px auto; }
+
+/* admin table */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+th, td { text-align: start; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { color: var(--muted); font-weight: 500; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: .78rem; font-weight: 600; }
+.pill.active { background: color-mix(in srgb, var(--brand) 15%, transparent); color: var(--brand); }
+.pill.redeemed { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.pill.cancelled, .pill.expired { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+.stats { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.stat { flex: 1; min-width: 120px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.stat b { display: block; font-size: 1.6rem; }
+
+/* guest ticket: event-blue page, branding wall artwork on top */
+body.ticket-page { background: var(--event-blue); }
+body.ticket-page main { padding-top: 20px; }
+.ticket { max-width: 420px; margin: 0 auto; background: var(--surface); border-radius: 22px; overflow: hidden; box-shadow: 0 18px 50px rgba(5, 15, 45, .45); }
+.ticket-art { display: block; width: 100%; height: auto; aspect-ratio: 2 / 1; background: var(--event-blue); }
+.ticket-head { padding: 20px 22px 4px; text-align: center; }
+.ticket-head h1 { margin: 0 0 2px; font-size: 1.35rem; font-weight: 700; }
+.ticket-head .rule { width: 44px; height: 4px; background: var(--accent); border-radius: 2px; margin: 12px auto 0; }
+.ticket-body { padding: 18px 22px 22px; text-align: center; }
+.qr { background: #fff; padding: 14px; border-radius: 14px; display: inline-block; border: 2px solid var(--line); }
+.ticket-page .muted-on-blue { color: rgba(255, 255, 255, .7); text-align: center; font-size: .8rem; margin-top: 18px; }
+.qr svg, .qr img { display: block; width: 240px; height: 240px; }
+.guest { font-size: 1.25rem; font-weight: 700; margin: 16px 0 2px; }
+.perf { border-top: 2px dashed var(--line); margin: 0 18px; }
+.ticket-foot { padding: 16px 22px 22px; font-size: .92rem; }
+.ticket-foot div { margin-bottom: 6px; }
+.status-banner { padding: 10px; border-radius: 10px; font-weight: 600; margin-bottom: 12px; }
+.status-banner.redeemed { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.status-banner.cancelled { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+
+/* scanner */
+#reader { width: 100%; max-width: 480px; margin: 0 auto; border-radius: var(--radius); overflow: hidden; background: #000; }
+.result { margin-top: 16px; border-radius: var(--radius); padding: 22px; text-align: center; color: #fff; }
+.result h2 { font-size: 1.6rem; margin: 0 0 6px; }
+.result.ok { background: var(--ok); }
+.result.warn { background: var(--warn); }
+.result.bad { background: var(--bad); }
