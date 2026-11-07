@@ -40,7 +40,7 @@ App users still see only their own tickets, so guest tickets never appear in any
 ```
 npm run dev
 ```
-Then open `http://localhost:5173/admin.html`. Ticket links use the clean `/t/<token>` form, which only works on Vercel. Locally, open `ticket.html?t=<token>` instead.
+Then open `http://localhost:5173`. It opens the admin page at `/`, and `/t/<token>` ticket links work locally too.
 
 ## Removing it later
 

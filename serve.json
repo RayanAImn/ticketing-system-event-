@@ -1,0 +1,8 @@
+{
+  "cleanUrls": true,
+  "directoryListing": false,
+  "rewrites": [
+    { "source": "/", "destination": "/admin.html" },
+    { "source": "/t/:token", "destination": "/ticket.html" }
+  ]
+}
