@@ -54,6 +54,7 @@
     no_guests: 'No guests found.',
     bad_image_url: 'The cover image link is not valid.',
     bad_capacity: 'Capacity must be a whole number.',
+    description_too_long: 'Each description can be at most 500 characters.',
     bad_email: 'One of the emails is not valid.',
     email_already_invited: 'This email already has a ticket for this event.',
     too_many_guests: 'Import at most 2000 guests at a time.',

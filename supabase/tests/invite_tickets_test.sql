@@ -106,6 +106,8 @@ select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json('{"
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json(jsonb_build_object('ends_at', now()))) $$, null::char(5), 'ends_before_start', 'end before start refused');
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json('{"capacity":"-1"}')) $$, null::char(5), 'bad_capacity', 'bad capacity refused');
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json('{"image_url":"javascript:alert(1)"}')) $$, null::char(5), 'bad_image_url', 'non-https image refused');
+select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json(jsonb_build_object('description', repeat('x', 501)))) $$, null::char(5), 'description_too_long', 'description over 500 refused');
+select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json(jsonb_build_object('description_ar', repeat('س', 501)))) $$, null::char(5), 'description_too_long', 'Arabic description over 500 refused');
 select throws_ok($$ select public.invite_save_event('20000000-0000-0000-0000-000000000001', pg_temp.event_json()) $$, null::char(5), 'event_not_found', 'cannot edit a visit app event');
 select lives_ok($$ insert into ids select 'ev', public.invite_save_event(null, pg_temp.event_json())::text $$, 'organiser creates an event');
 reset role;
@@ -332,11 +334,14 @@ select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1
 set local role authenticated;
 select throws_ok($$ select public.invite_delete_event((select v::uuid from ids where k = 'ev')) $$, null::char(5), 'event_has_guests', 'event with guests cannot be deleted');
 select throws_ok($$ select public.invite_delete_event('20000000-0000-0000-0000-000000000001') $$, null::char(5), 'event_not_found', 'cannot delete a visit app event');
+select lives_ok($$ insert into ids select 'long', public.invite_save_event(null, pg_temp.event_json(jsonb_build_object('name', 'Long', 'description', repeat('x', 500), 'description_ar', repeat('س', 500))))::text $$, 'description of 500 saved (visit caps summary at 160)');
 select lives_ok($$ insert into ids select 'empty', public.invite_save_event(null, pg_temp.event_json('{"name":"Empty"}'))::text $$, 'create an empty event');
 select lives_ok($$ select public.invite_delete_event((select v::uuid from ids where k = 'empty')) $$, 'empty event deleted');
 reset role;
 select is((select count(*) from public.event_translations where event_id = (select v::uuid from ids where k = 'empty'))::int, 0, 'its translations deleted');
 select is((select count(*) from public.events where id = '20000000-0000-0000-0000-000000000001')::int, 1, 'visit app event still there');
+select results_eq($$ select length(summary), length(description) from public.event_translations where event_id = (select v::uuid from ids where k = 'long') order by locale $$,
+                  $$ values (160, 500), (160, 500) $$, 'long description: summary cut to 160, description kept');
 
 -- ---------------------------------------------------------------- cover upload policy (real storage)
 

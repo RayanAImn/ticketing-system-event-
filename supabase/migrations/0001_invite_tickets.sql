@@ -269,8 +269,9 @@ declare
   v_id       uuid := p_event_id;
   v_name     text := left(trim(coalesce(p_event->>'name', '')), 200);
   v_name_ar  text := nullif(left(trim(coalesce(p_event->>'name_ar', '')), 200), '');
-  v_desc     text := left(trim(coalesce(p_event->>'description', '')), 5000);
-  v_desc_ar  text := left(trim(coalesce(p_event->>'description_ar', '')), 5000);
+  -- visit caps event_translations: description 500, summary 160 characters.
+  v_desc     text := trim(coalesce(p_event->>'description', ''));
+  v_desc_ar  text := trim(coalesce(p_event->>'description_ar', ''));
   v_venue    text := nullif(left(trim(coalesce(p_event->>'venue', '')), 200), '');
   v_image    text := left(trim(coalesce(p_event->>'image_url', '')), 1000);
   v_cap_txt  text := trim(coalesce(p_event->>'capacity', ''));
@@ -297,6 +298,7 @@ begin
     if v_cap_txt !~ '^\d{1,6}$' then raise exception 'bad_capacity'; end if;
     v_capacity := v_cap_txt::integer;
   end if;
+  if length(v_desc) > 500 or length(v_desc_ar) > 500 then raise exception 'description_too_long'; end if;
   if v_image <> '' and v_image !~ '^https://[^\s"<>]+$' then raise exception 'bad_image_url'; end if;
 
   if v_id is null then
@@ -323,7 +325,7 @@ begin
   end if;
 
   insert into public.event_translations (event_id, locale, title, summary, description)
-  values (v_id, 'en', v_name, left(v_desc, 200), v_desc)
+  values (v_id, 'en', v_name, left(v_desc, 160), v_desc)
   on conflict (event_id, locale) do update
     set title = excluded.title, summary = excluded.summary, description = excluded.description;
 
@@ -331,7 +333,7 @@ begin
     delete from public.event_translations where event_id = v_id and locale = 'ar';
   else
     insert into public.event_translations (event_id, locale, title, summary, description)
-    values (v_id, 'ar', v_name_ar, left(v_desc_ar, 200), v_desc_ar)
+    values (v_id, 'ar', v_name_ar, left(v_desc_ar, 160), v_desc_ar)
     on conflict (event_id, locale) do update
       set title = excluded.title, summary = excluded.summary, description = excluded.description;
   end if;
