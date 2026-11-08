@@ -12,7 +12,7 @@
 --     specific user (RLS "users read own tickets", mobile_tickets, per-user limits,
 --     supplier/cancellation functions), so rows with a null user are never matched.
 --     A check constraint still requires every row to have a user OR a guest name.
---   * tickets gains guest_name, guest_phone, guest_email, guest_note, link_token.
+--   * tickets gains guest_name, guest_phone, guest_email, guest_note, guest_staff_id, link_token.
 --   * events gains invite_managed and invite_registration_open. Events made here
 --     are saved as status 'Draft' (visit's public reads and the app only show
 --     'Published'), ticket mode, free, not in "view all".
@@ -42,6 +42,7 @@ alter table public.tickets
   add column if not exists guest_phone text,
   add column if not exists guest_email text,
   add column if not exists guest_note  text,
+  add column if not exists guest_staff_id text,
   add column if not exists link_token  text;
 
 alter table public.tickets drop constraint if exists tickets_user_or_guest;
@@ -55,6 +56,11 @@ create unique index if not exists tickets_link_token_uidx
 create unique index if not exists tickets_guest_email_uidx
   on public.tickets (event_id, lower(guest_email))
   where guest_email is not null and status <> 'cancelled';
+
+-- One live ticket per staff ID per event.
+create unique index if not exists tickets_guest_staff_id_uidx
+  on public.tickets (event_id, guest_staff_id)
+  where guest_staff_id is not null and status <> 'cancelled';
 
 -- ---------------------------------------------------------------- events: invite columns
 
@@ -149,6 +155,7 @@ begin
              'ticketId',    t.id,
              'guestName',   t.guest_name,
              'guestEmail',  t.guest_email,
+             'staffId',     t.guest_staff_id,
              'linkToken',   t.link_token,
              'eventName',   coalesce(en.title, e.slug),
              'eventNameAr', ar.title,
@@ -363,6 +370,7 @@ $$;
 
 -- ---------------------------------------------------------------- organiser: guests
 
+drop function if exists public.invite_list_tickets(uuid);
 create or replace function public.invite_list_tickets(p_event_id uuid)
 returns table (
   id          uuid,
@@ -370,6 +378,7 @@ returns table (
   guest_phone text,
   guest_email text,
   guest_note  text,
+  guest_staff_id text,
   link_token  text,
   status      text,
   redeemed_at timestamptz,
@@ -384,7 +393,7 @@ as $$
 begin
   perform public.invite_require_manager();
   return query
-  select t.id, t.guest_name, t.guest_phone, t.guest_email, t.guest_note, t.link_token,
+  select t.id, t.guest_name, t.guest_phone, t.guest_email, t.guest_note, t.guest_staff_id, t.link_token,
          t.status, t.redeemed_at, t.created_at
   from public.tickets t
   join public.events e on e.id = t.event_id and e.invite_managed
@@ -421,13 +430,14 @@ begin
   if v_title is null then raise exception 'event_not_found'; end if;
 
   create temp table if not exists pg_temp.invite_new_guests
-    (name text, phone text, email text, note text) on commit drop;
+    (name text, phone text, email text, note text, staff_id text) on commit drop;
   truncate pg_temp.invite_new_guests;
   insert into pg_temp.invite_new_guests
   select left(trim(g->>'name'), 120),
          nullif(left(trim(coalesce(g->>'phone', '')), 40), ''),
          nullif(lower(trim(coalesce(g->>'email', ''))), ''),
-         nullif(left(trim(coalesce(g->>'note', '')), 300), '')
+         nullif(left(trim(coalesce(g->>'note', '')), 300), ''),
+         nullif(left(trim(coalesce(g->>'staff_id', '')), 40), '')
   from jsonb_array_elements(p_guests) g
   where length(trim(coalesce(g->>'name', ''))) > 0;
 
@@ -446,6 +456,13 @@ begin
                                      and t.status <> 'cancelled') then
     raise exception 'email_already_invited';
   end if;
+  if exists (select 1 from pg_temp.invite_new_guests where staff_id is not null
+             group by staff_id having count(*) > 1)
+     or exists (select 1 from pg_temp.invite_new_guests n
+                join public.tickets t on t.event_id = p_event_id and t.guest_staff_id = n.staff_id
+                                     and t.status <> 'cancelled') then
+    raise exception 'staff_id_already_invited';
+  end if;
 
   if v_capacity is not null then
     select count(*) into v_live from public.tickets
@@ -457,15 +474,15 @@ begin
   -- tickets (it has no user to send to); this site sends its own email instead.
   return query
   insert into public.tickets
-    (user_id, event_id, title, guest_name, guest_phone, guest_email, guest_note, link_token, email_sent_at)
-  select null::uuid, p_event_id, v_title, n.name, n.phone, n.email, n.note,
+    (user_id, event_id, title, guest_name, guest_phone, guest_email, guest_note, guest_staff_id, link_token, email_sent_at)
+  select null::uuid, p_event_id, v_title, n.name, n.phone, n.email, n.note, n.staff_id,
          encode(extensions.gen_random_bytes(24), 'hex'), now()
   from pg_temp.invite_new_guests n
   returning link_token;
 end;
 $$;
 
--- p_guests: [{"name": "...", "phone": "...", "email": "...", "note": "..."}, ...]
+-- p_guests: [{"name": "...", "phone": "...", "email": "...", "note": "...", "staff_id": "..."}, ...]
 create or replace function public.invite_create_tickets(p_event_id uuid, p_guests jsonb)
 returns integer
 language plpgsql
@@ -685,9 +702,11 @@ $$;
 
 -- ---------------------------------------------------------------- guest: open ticket by link
 
+drop function if exists public.invite_get_ticket(text);
 create or replace function public.invite_get_ticket(p_link_token text)
 returns table (
   guest_name    text,
+  staff_id      text,
   status        text,
   qr_token      text,
   redeemed_at   timestamptz,
@@ -705,6 +724,7 @@ set search_path to ''
 set row_security to 'off'
 as $$
   select t.guest_name,
+         t.guest_staff_id,
          t.status,
          case when t.status = 'cancelled' then null else t.qr_token end,
          t.redeemed_at,
@@ -726,11 +746,13 @@ $$;
 
 -- Same outcome codes as scan_ticket_qr and logs to the same ticket_scans table.
 -- Only tickets of this site's events are accepted; visit app tickets are invalid here.
+drop function if exists public.invite_scan_ticket(text, uuid);
 create or replace function public.invite_scan_ticket(p_qr_token text, p_event_id uuid default null)
 returns table (
   status      text,
   ticket_id   uuid,
   guest_name  text,
+  staff_id    text,
   note        text,
   redeemed_at timestamptz,
   scanned_at  timestamptz
@@ -761,7 +783,7 @@ begin
   for update of t;
 
   if v_ticket.id is null then
-    return query select 'invalid_ticket'::text, null::uuid, null::text, null::text, null::timestamptz, v_now;
+    return query select 'invalid_ticket'::text, null::uuid, null::text, null::text, null::text, null::timestamptz, v_now;
     return;
   end if;
 
@@ -785,7 +807,7 @@ begin
   values (v_ticket.id, v_scanner_id, v_status, v_now);
 
   return query select v_status, v_ticket.id, coalesce(v_ticket.guest_name, v_ticket.title),
-                      v_ticket.guest_note, v_ticket.redeemed_at, v_now;
+                      v_ticket.guest_staff_id, v_ticket.guest_note, v_ticket.redeemed_at, v_now;
 end;
 $$;
 

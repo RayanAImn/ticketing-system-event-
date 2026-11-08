@@ -15,7 +15,7 @@ Every guest with an email gets their ticket by email, sent from visit's sender (
 
 `supabase/migrations/0001_invite_tickets.sql`:
 
-- **`tickets`:** `user_id` may be empty for guest tickets; adds `guest_name`, `guest_phone`, `guest_email`, `guest_note`, `link_token`. A rule still requires every ticket to have an app user or a guest name. One live ticket per email per event.
+- **`tickets`:** `user_id` may be empty for guest tickets; adds `guest_name`, `guest_phone`, `guest_email`, `guest_note`, `guest_staff_id`, `link_token`. A rule still requires every ticket to have an app user or a guest name. One live ticket per email per event.
 - **`events`:** adds `invite_managed` (marks this site's events) and `invite_registration_open`. Events made here are saved as **Draft**, ticket mode, free, hidden from "view all", so the visit app never shows them. They do appear as Draft in the visit admin dashboard.
 - **`roles`:** two new rows, `event_manager` and `ticket_scanner`. Visit admins get no access to this site.
 - **Functions:** all named `invite_*`, each checking the role on the server.

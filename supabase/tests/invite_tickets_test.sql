@@ -146,10 +146,13 @@ set local role authenticated;
 select throws_ok($$ select public.invite_create_tickets('20000000-0000-0000-0000-000000000001', '[{"name":"X"}]') $$, null::char(5), 'event_not_found', 'cannot add guests to a visit app event');
 select throws_ok($$ select public.invite_create_tickets((select v::uuid from ids where k = 'ev'), '[{"name":"A","email":"nope"}]') $$, null::char(5), 'bad_email', 'bad email refused');
 select throws_ok($$ select public.invite_create_tickets((select v::uuid from ids where k = 'ev'), '[{"name":"A","email":"a@x.com"},{"name":"B","email":"A@x.com"}]') $$, null::char(5), 'email_already_invited', 'duplicate email in a list refused');
+select throws_ok($$ select public.invite_create_tickets((select v::uuid from ids where k = 'ev'), '[{"name":"A","staff_id":"7"},{"name":"B","staff_id":" 7 "}]') $$, null::char(5), 'staff_id_already_invited', 'duplicate staff ID in a list refused');
 select is(public.invite_create_tickets((select v::uuid from ids where k = 'ev'),
-            '[{"name":"Sara","phone":"055","email":" Sara@Example.com ","note":"VIP"},{"name":"Omar"},{"name":" "}]'), 2,
+            '[{"name":"Sara","phone":"055","email":" Sara@Example.com ","note":"VIP","staff_id":" 10234 "},{"name":"Omar"},{"name":" "}]'), 2,
           'organiser adds 2 guests (blank name skipped)');
 select throws_ok($$ select public.invite_create_tickets((select v::uuid from ids where k = 'ev'), '[{"name":"Again","email":"sara@example.com"}]') $$, null::char(5), 'email_already_invited', 'email already invited refused');
+select throws_ok($$ select public.invite_create_tickets((select v::uuid from ids where k = 'ev'), '[{"name":"Again","staff_id":"10234"}]') $$, null::char(5), 'staff_id_already_invited', 'staff ID already invited refused');
+select is((select guest_staff_id from public.invite_list_tickets((select v::uuid from ids where k = 'ev')) where guest_name = 'Sara'), '10234', 'organiser sees the staff ID');
 select throws_ok($$ select public.invite_create_tickets((select v::uuid from ids where k = 'ev'), '[{"name":"C"},{"name":"D"}]') $$, null::char(5), 'event_sold_out', 'capacity enforced');
 select throws_ok($$ select public.invite_save_event((select v::uuid from ids where k = 'ev'), pg_temp.event_json('{"capacity":"1"}')) $$, null::char(5), 'capacity_below_guests', 'capacity cannot go below guests');
 select is((select count(*) from public.invite_list_tickets((select v::uuid from ids where k = 'ev')))::int, 2, 'organiser lists guests');
@@ -165,6 +168,7 @@ select ok((select user_id is null and guest_email = 'sara@example.com' and title
                   and length(link_token) = 48 and length(qr_token) = 64 and email_sent_at is not null
            from public.tickets where guest_name = 'Sara'), 'guest stored in visit tickets, marked as emailed');
 select is((select count(*) from pg_temp.invite_calls() c where c->>'guestEmail' = 'sara@example.com')::int, 1, 'invite email queued for Sara');
+select is((select c->>'staffId' from pg_temp.invite_calls() c where c->>'guestEmail' = 'sara@example.com'), '10234', 'email request carries the staff ID');
 select is((select count(*) from pg_temp.invite_calls() c where c->>'guestName' = 'Omar')::int, 0, 'no email for a guest without one');
 select ok((select c->>'eventNameAr' = 'يوم السلامة' and c->>'city' = 'Testcity' and c->>'cityAr' = 'مدينة الاختبار' and c->'_headers'->>'x-invite-secret' = 's3cret' and length(c->>'linkToken') = 48
            from pg_temp.invite_calls() c where c->>'guestEmail' = 'sara@example.com'), 'email request carries event, secret header and link');
@@ -219,6 +223,9 @@ select is((select count(*) from public.invite_get_event((select slug from public
           'public page never shows a visit app event');
 reset role;
 
+set local role anon;
+select is((select staff_id from public.invite_get_ticket((select v from ids where k = 'sara_link'))), '10234', 'ticket page shows the staff ID');
+reset role;
 select set_config('request.headers', '{"x-forwarded-for":"1.2.3.4, 10.0.0.1"}', true);
 set local role anon;
 select throws_ok($$ select public.invite_register((select v from ids where k = 'slug'), 'Bot', 'bot@x.com', null, 'spam') $$, null::char(5), 'registration_closed', 'honeypot blocks bots');
@@ -313,10 +320,10 @@ reset role;
 select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a2', true);
 set local role authenticated;
 select is((select status from public.invite_scan_ticket((select v from ids where k = 'sara_qr'))), 'invalid_ticket', 'old QR is invalid');
-select results_eq($$ select status, guest_name, note from public.invite_scan_ticket(
+select results_eq($$ select status, guest_name, staff_id, note from public.invite_scan_ticket(
                        (select v from ids where k = 'sara_qr2'),
                        (select v::uuid from ids where k = 'ev')) $$,
-                  $$ values ('ticket_redeemed'::text, 'Sara'::text, 'VIP'::text) $$, 'scanner checks the guest in');
+                  $$ values ('ticket_redeemed'::text, 'Sara'::text, '10234'::text, 'VIP'::text) $$, 'scanner checks the guest in');
 select is((select status from public.invite_scan_ticket((select v from ids where k = 'sara_qr2'))), 'ticket_already_redeemed', 'second scan = already used');
 select is((select status from public.invite_scan_ticket((select v from ids where k = 'app_qr'))), 'invalid_ticket', 'visit app ticket is invalid at this gate');
 reset role;

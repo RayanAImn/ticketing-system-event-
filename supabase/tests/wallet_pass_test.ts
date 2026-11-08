@@ -22,7 +22,7 @@ const env: Record<string, string> = {
 Deno.env.get = (k: string) => env[k];
 
 let ticket: Record<string, unknown> | null = {
-  guest_name: "Sara Alqahtani", status: "active", qr_token: "q".repeat(64), redeemed_at: null,
+  guest_name: "Sara Alqahtani", staff_id: "10234", status: "active", qr_token: "q".repeat(64), redeemed_at: null,
   event_name: "Safety Day 2026", event_name_ar: "يوم السلامة 2026", venue: "JESCO Main Hall", venue_ar: null,
   starts_at: "2026-12-10T06:00:00+00:00", ends_at: "2026-12-10T12:00:00+00:00",
 };
@@ -58,6 +58,7 @@ ok(pj.passTypeIdentifier === "pass.test" && pj.teamIdentifier === "ABCDE12345", 
 ok(pj.barcodes[0].format === "PKBarcodeFormatQR" && pj.barcodes[0].message === "q".repeat(64), "QR holds the scanner token");
 ok(pj.eventTicket.primaryFields[0].value === "Safety Day 2026", "event name");
 ok(pj.eventTicket.secondaryFields[0].value === "Sara Alqahtani", "guest name");
+ok(pj.eventTicket.secondaryFields[1]?.value === "10234", "staff ID on the pass");
 ok(pj.eventTicket.auxiliaryFields[0].value === "2026-12-10T09:00:00+03:00", "date in Saudi time: " + pj.eventTicket.auxiliaryFields[0].value);
 ok(pj.expirationDate === "2026-12-11T15:00:00+03:00", "expires a day after the end: " + pj.expirationDate);
 ok(pj.eventTicket.backFields.some((f: any) => f.value === `https://tickets.test/t/${token}`), "back links to the ticket page");

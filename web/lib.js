@@ -57,6 +57,7 @@
     description_too_long: 'Each description can be at most 500 characters.',
     bad_email: 'One of the emails is not valid.',
     email_already_invited: 'This email already has a ticket for this event.',
+    staff_id_already_invited: 'This staff ID already has a ticket for this event.',
     too_many_guests: 'Import at most 2000 guests at a time.',
     ticket_not_active: 'This ticket is no longer active.',
     no_email: 'This guest has no email address.',

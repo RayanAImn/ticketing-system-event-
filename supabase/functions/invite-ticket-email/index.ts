@@ -19,6 +19,7 @@ interface TicketPayload {
   ticketId: string;
   guestName: string;
   guestEmail: string;
+  staffId?: string | null;
   linkToken: string;
   eventName: string;
   eventNameAr: string | null;
@@ -99,6 +100,8 @@ function ticketEmailHtml(p: TicketPayload, ticketUrl: string, walletUrl: string 
     </div>
     <div style="margin:0 24px 20px;padding:12px 16px;background:#f2f4f8;border-radius:10px;">
       <table role="presentation" width="100%" style="border-collapse:collapse;font-size:14px;" dir="ltr">
+        ${row("Staff ID", p.staffId ?? "", "ltr")}
+        ${row("الرقم الوظيفي", p.staffId ?? "", "ltr")}
         ${row("Event", p.eventName, "ltr")}
         ${row("الفعالية", p.eventNameAr ?? "", "rtl")}
         ${row("When", when(p.startsAt, p.endsAt, "en-GB"), "ltr")}

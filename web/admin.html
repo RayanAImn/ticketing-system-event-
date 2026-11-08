@@ -125,6 +125,7 @@
         <form id="addGuest">
           <div class="row">
             <div class="field"><label>Name *</label><input name="name" required></div>
+            <div class="field"><label>Staff ID</label><input name="staff_id" maxlength="40"></div>
             <div class="field"><label>Email</label><input name="email" type="email"></div>
             <div class="field"><label>Phone</label><input name="phone" placeholder="05xxxxxxxx"></div>
             <div class="field"><label>Note (shown to scanner)</label><input name="note" placeholder="e.g. VIP"></div>
@@ -134,9 +135,9 @@
         </form>
         <details style="margin-top:16px">
           <summary>Import a list</summary>
-          <p class="muted">One guest per line: <code>name, phone, email, note</code> (only name is required).
+          <p class="muted">One guest per line: <code>name, phone, email, note, staff ID</code> (only name is required).
             You can paste straight from Excel, or pick a .csv file.</p>
-          <textarea id="bulk" placeholder="Sara Alqahtani, 0551234567, sara@example.com, VIP&#10;Omar Alharbi, 0559876543"></textarea>
+          <textarea id="bulk" placeholder="Sara Alqahtani, 0551234567, sara@example.com, VIP, 10234&#10;Omar Alharbi, 0559876543"></textarea>
           <div class="row" style="margin-top:8px">
             <input type="file" id="csvFile" accept=".csv,.txt" style="width:auto">
             <span class="spacer"></span>
@@ -150,7 +151,7 @@
         <div class="row" style="margin-bottom:12px">
           <h2 style="margin:0">Guests</h2>
           <span class="spacer"></span>
-          <input id="search" placeholder="Search name, phone, email" style="max-width:260px">
+          <input id="search" placeholder="Search name, staff ID, phone, email" style="max-width:260px">
           <button class="small" id="exportBtn">Export CSV</button>
           <button class="small" id="refreshBtn">Refresh</button>
         </div>
@@ -327,7 +328,7 @@
 
     const q = $('#search').value.trim().toLowerCase();
     const list = q
-      ? tickets.filter((t) => [t.guest_name, t.guest_phone, t.guest_email, t.guest_note]
+      ? tickets.filter((t) => [t.guest_name, t.guest_staff_id, t.guest_phone, t.guest_email, t.guest_note]
           .some((v) => (v || '').toLowerCase().includes(q)))
       : tickets;
 
@@ -335,7 +336,7 @@
       const active = t.status === 'active';
       const statusText = t.status === 'redeemed' ? `checked in<br><small class="muted">${esc(fmtDate(t.redeemed_at))}</small>` : t.status;
       return `<tr data-id="${t.id}">
-        <td><b>${esc(t.guest_name)}</b>${t.guest_note ? `<br><small class="muted">${esc(t.guest_note)}</small>` : ''}</td>
+        <td><b>${esc(t.guest_name)}</b>${t.guest_staff_id ? `<br><small>ID ${esc(t.guest_staff_id)}</small>` : ''}${t.guest_note ? `<br><small class="muted">${esc(t.guest_note)}</small>` : ''}</td>
         <td>${esc(t.guest_email || '')}${t.guest_phone ? `<br><small class="muted">${esc(t.guest_phone)}</small>` : ''}</td>
         <td><span class="pill ${t.status}">${statusText}</span></td>
         <td><div class="row">
@@ -365,15 +366,15 @@
   function parseList(text) {
     return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
       const sep = line.includes('\t') ? '\t' : line.includes(';') ? ';' : ',';
-      const [name, phone, email, note] = line.split(sep).map((c) => c.trim().replace(/^"|"$/g, ''));
-      return { name, phone, email, note };
+      const [name, phone, email, note, staff_id] = line.split(sep).map((c) => c.trim().replace(/^"|"$/g, ''));
+      return { name, phone, email, note, staff_id };
     }).filter((g) => g.name && !/^name$/i.test(g.name));
   }
 
   function exportCsv() {
     const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const lines = [['name', 'phone', 'email', 'note', 'status', 'checked_in_at', 'link']]
-      .concat(tickets.map((t) => [t.guest_name, t.guest_phone, t.guest_email, t.guest_note, t.status,
+    const lines = [['name', 'phone', 'email', 'note', 'staff_id', 'status', 'checked_in_at', 'link']]
+      .concat(tickets.map((t) => [t.guest_name, t.guest_phone, t.guest_email, t.guest_note, t.guest_staff_id, t.status,
         t.redeemed_at || '', t.status === 'cancelled' ? '' : ticketUrl(t.link_token)]));
     const blob = new Blob(['﻿' + lines.map((l) => l.map(cell).join(',')).join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
@@ -413,7 +414,8 @@
     const f = e.target;
     $('#addError').textContent = '';
     try {
-      await createTickets([{ name: f.name.value, phone: f.phone.value, email: f.email.value, note: f.note.value }]);
+      await createTickets([{ name: f.name.value, staff_id: f.staff_id.value, phone: f.phone.value,
+        email: f.email.value, note: f.note.value }]);
       f.reset();
       f.name.focus();
     } catch (err) { $('#addError').textContent = err.message; }

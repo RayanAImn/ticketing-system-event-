@@ -21,8 +21,8 @@
     city_id: 'c1', capacity: 150, image_url: '/brand/hero.webp', registration_open: true,
   }];
   const tickets = [
-    { id: 't1', event_id: 'e1', guest_name: 'Sara Alqahtani', guest_phone: '0551234567', guest_email: 'sara@example.com', guest_note: 'VIP', status: 'redeemed', redeemed_at: '2026-12-10T06:12:00Z' },
-    { id: 't2', event_id: 'e1', guest_name: 'Omar Alharbi', guest_phone: '0559876543', guest_email: 'omar@example.com', guest_note: null, status: 'active' },
+    { id: 't1', event_id: 'e1', guest_name: 'Sara Alqahtani', guest_phone: '0551234567', guest_email: 'sara@example.com', guest_note: 'VIP', guest_staff_id: '10234', status: 'redeemed', redeemed_at: '2026-12-10T06:12:00Z' },
+    { id: 't2', event_id: 'e1', guest_name: 'Omar Alharbi', guest_phone: '0559876543', guest_email: 'omar@example.com', guest_note: null, guest_staff_id: '10587', status: 'active' },
     { id: 't3', event_id: 'e1', guest_name: 'Huda Alshehri', guest_phone: null, guest_email: 'huda@example.com', guest_note: 'Speaker', status: 'active' },
   ].map((t) => ({ ...t, link_token: hex(24), qr_token: hex(32), created_at: new Date().toISOString() }));
 
@@ -33,7 +33,7 @@
     if (ev.capacity != null && live(ev) + guests.length > ev.capacity) return null;
     return guests.map((g) => {
       const t = { id: hex(8), event_id: ev.id, guest_name: g.name.trim(), guest_phone: g.phone || null,
-        guest_email: (g.email || '').toLowerCase() || null, guest_note: g.note || null, status: 'active',
+        guest_email: (g.email || '').toLowerCase() || null, guest_note: g.note || null, guest_staff_id: g.staff_id || null, status: 'active',
         link_token: hex(24), qr_token: hex(32), created_at: new Date().toISOString() };
       tickets.unshift(t);
       return t;
@@ -80,7 +80,7 @@
     },
     invite_get_ticket: ({ p_link_token }) => tickets.filter((t) => t.link_token === p_link_token).map((t) => {
       const e = events.find((x) => x.id === t.event_id);
-      return { ...t, qr_token: t.status === 'cancelled' ? null : t.qr_token, event_name: e.name, event_name_ar: e.name_ar,
+      return { ...t, staff_id: t.guest_staff_id, qr_token: t.status === 'cancelled' ? null : t.qr_token, event_name: e.name, event_name_ar: e.name_ar,
         venue: e.venue, starts_at: e.starts_at, ends_at: e.ends_at };
     }),
     invite_scan_ticket: ({ p_qr_token, p_event_id }) => {
@@ -92,7 +92,7 @@
       else if (t.status === 'cancelled') status = 'ticket_cancelled';
       else if (t.status === 'redeemed') status = 'ticket_already_redeemed';
       else Object.assign(t, { status: 'redeemed', redeemed_at: now });
-      return [{ status, ticket_id: t.id, guest_name: t.guest_name, note: t.guest_note, redeemed_at: t.redeemed_at, scanned_at: now }];
+      return [{ status, ticket_id: t.id, guest_name: t.guest_name, staff_id: t.guest_staff_id, note: t.guest_note, redeemed_at: t.redeemed_at, scanned_at: now }];
     },
   };
 

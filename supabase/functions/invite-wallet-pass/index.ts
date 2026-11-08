@@ -26,6 +26,7 @@ const SITE_URL = env("INVITE_SITE_URL").replace(/\/+$/, "");
 
 interface Ticket {
   guest_name: string;
+  staff_id?: string | null;
   status: string;
   qr_token: string | null;
   redeemed_at: string | null;
@@ -97,7 +98,10 @@ export function passJson(t: Ticket, cfg: { passTypeId: string; teamId: string; s
     barcodes: [{ format: "PKBarcodeFormatQR", message: t.qr_token, messageEncoding: "iso-8859-1" }],
     eventTicket: {
       primaryFields: [field("event", "EVENT · الفعالية", t.event_name)],
-      secondaryFields: [field("guest", "GUEST · الضيف", t.guest_name)],
+      secondaryFields: [
+        field("guest", "GUEST · الضيف", t.guest_name),
+        ...(t.staff_id ? [field("staff_id", "STAFF ID · الرقم الوظيفي", t.staff_id)] : []),
+      ],
       auxiliaryFields: [
         ...(start ? [field("date", "DATE · الموعد", start, { dateStyle: "PKDateStyleMedium", timeStyle: "PKDateStyleShort", ignoresTimeZone: true })] : []),
         ...(venue ? [field("venue", "VENUE · المكان", venue)] : []),

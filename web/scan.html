@@ -86,6 +86,7 @@
       const r = data[0];
       const [kind, title] = MESSAGES[r.status] || ['bad', r.status];
       let detail = r.guest_name ? `<b>${esc(r.guest_name)}</b>` : '';
+      if (r.staff_id) detail += `<br>Staff ID ${esc(r.staff_id)}`;
       if (r.note) detail += `<br>${esc(r.note)}`;
       if (r.status === 'ticket_already_redeemed') detail += `<br>at ${esc(fmtDate(r.redeemed_at))}`;
       show(kind, title, detail);

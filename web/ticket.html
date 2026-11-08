@@ -71,6 +71,7 @@
         ${banner}
         ${qrHtml}
         <div class="guest">${esc(t.guest_name)}</div>
+        ${t.staff_id ? `<div class="staff-id">Staff ID · الرقم الوظيفي: <b>${esc(t.staff_id)}</b></div>` : ''}
         <div class="muted">Show this code at the entrance<br><span dir="rtl">أبرز هذا الرمز عند الدخول</span></div>
         ${wallet}
       </div>
