@@ -169,6 +169,7 @@
 (function () {
   const { db, $, esc, fmtDate, ticketUrl, eventUrl, toLocalInput, fromLocalInput, errText, setupLogin, signOut } = T;
   let events = [], cities = [], tickets = [], current = null, editing = null, coverUrl = '';
+  let assignedOnly = false; // organiser limited to some events: no new or delete
 
   function show(view) {
     for (const id of ['listView', 'editView', 'eventView']) $('#' + id).hidden = id !== view;
@@ -385,7 +386,16 @@
 
   // ---------------------------------------------------------------- wiring
 
-  setupLogin({ form: $('#login'), app: $('#app'), allowed: ['admin'], onReady: () => { loadEvents(); loadCities(); } });
+  // An organiser limited to one event goes straight into it.
+  async function start() {
+    const { data } = await db.rpc('invite_assigned_only');
+    assignedOnly = !!data;
+    $('#newBtn').hidden = $('#deleteBtn').hidden = assignedOnly;
+    await Promise.all([loadEvents(), loadCities()]);
+    if (assignedOnly && events.length === 1) openEvent(events[0].id);
+  }
+
+  setupLogin({ form: $('#login'), app: $('#app'), allowed: ['admin'], onReady: start });
   $('#signout').onclick = signOut;
   $('#newBtn').onclick = () => openEditor(null);
   $('#editBtn').onclick = () => openEditor(current);

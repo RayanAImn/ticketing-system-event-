@@ -107,6 +107,56 @@ begin
 end;
 $$;
 
+-- Organisers limited to some events. An organiser with rows here sees and manages
+-- only those events and cannot create or delete events; one without rows manages all.
+-- Add one: insert into public.invite_event_staff (user_id, event_id) values (...);
+create table if not exists public.invite_event_staff (
+  user_id  uuid not null references auth.users (id) on delete cascade,
+  event_id uuid not null references public.events (id) on delete cascade,
+  primary key (user_id, event_id)
+);
+alter table public.invite_event_staff enable row level security;
+revoke all on table public.invite_event_staff from anon, authenticated;
+
+create or replace function public.invite_assigned_only()
+returns boolean
+language sql
+stable
+security definer
+set search_path to ''
+as $$
+  select exists (select 1 from public.invite_event_staff s where s.user_id = auth.uid());
+$$;
+
+create or replace function public.invite_event_allowed(p_event_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path to ''
+as $$
+  select not public.invite_assigned_only()
+      or exists (select 1 from public.invite_event_staff s
+                 where s.user_id = auth.uid() and s.event_id = p_event_id);
+$$;
+
+-- Organiser who may manage this event (an unknown event passes here and is
+-- reported as event_not_found by the caller).
+create or replace function public.invite_require_event(p_event_id uuid)
+returns void
+language plpgsql
+stable
+security definer
+set search_path to ''
+as $$
+begin
+  perform public.invite_require_manager();
+  if p_event_id is not null and not public.invite_event_allowed(p_event_id) then
+    raise exception 'not_admin' using errcode = '42501';
+  end if;
+end;
+$$;
+
 -- ---------------------------------------------------------------- city names
 
 -- City name in 'en' or 'ar'. visit keeps city names in city_translations; the
@@ -259,6 +309,7 @@ as $$
   left join public.event_translations ar on ar.event_id = e.id and ar.locale = 'ar'
   where public.invite_staff_role() is not null
     and e.invite_managed
+    and public.invite_event_allowed(e.id)
   order by e.starts_at desc nulls last, e.created_at desc;
 $$;
 
@@ -289,7 +340,10 @@ declare
   v_capacity integer;
   v_live     integer;
 begin
-  perform public.invite_require_manager();
+  perform public.invite_require_event(p_event_id);
+  if p_event_id is null and public.invite_assigned_only() then
+    raise exception 'not_admin' using errcode = '42501';
+  end if;
 
   if v_name = '' then raise exception 'name_required'; end if;
   if nullif(p_event->>'city_id', '') is null then raise exception 'city_required'; end if;
@@ -359,6 +413,7 @@ set row_security to 'off'
 as $$
 begin
   perform public.invite_require_manager();
+  if public.invite_assigned_only() then raise exception 'not_admin' using errcode = '42501'; end if;
   perform 1 from public.events where id = p_event_id and invite_managed for update;
   if not found then raise exception 'event_not_found'; end if;
   if exists (select 1 from public.tickets where event_id = p_event_id) then
@@ -391,7 +446,7 @@ set search_path to ''
 set row_security to 'off'
 as $$
 begin
-  perform public.invite_require_manager();
+  perform public.invite_require_event(p_event_id);
   return query
   select t.id, t.guest_name, t.guest_phone, t.guest_email, t.guest_note, t.guest_staff_id, t.link_token,
          t.status, t.redeemed_at, t.created_at
@@ -493,7 +548,7 @@ as $$
 declare
   v_count integer;
 begin
-  perform public.invite_require_manager();
+  perform public.invite_require_event(p_event_id);
   perform 1 from public.events where id = p_event_id and invite_managed for update;
   if not found then raise exception 'event_not_found'; end if;
   select count(*) into v_count from public.invite_insert_guests(p_event_id, p_guests);
@@ -509,7 +564,7 @@ set search_path to ''
 set row_security to 'off'
 as $$
 begin
-  perform public.invite_require_manager();
+  perform public.invite_require_event((select event_id from public.tickets where id = p_ticket_id));
   update public.tickets t set status = 'cancelled'
   from public.events e
   where t.id = p_ticket_id and e.id = t.event_id and e.invite_managed
@@ -528,7 +583,7 @@ set search_path to ''
 set row_security to 'off'
 as $$
 begin
-  perform public.invite_require_manager();
+  perform public.invite_require_event((select event_id from public.tickets where id = p_ticket_id));
   update public.tickets t
      set link_token = encode(extensions.gen_random_bytes(24), 'hex'),
          qr_token   = encode(extensions.gen_random_bytes(32), 'hex')
@@ -548,7 +603,7 @@ set search_path to ''
 set row_security to 'off'
 as $$
 begin
-  perform public.invite_require_manager();
+  perform public.invite_require_event((select event_id from public.tickets where id = p_ticket_id));
   if not exists (
     select 1 from public.tickets t
     join public.events e on e.id = t.event_id and e.invite_managed
@@ -841,6 +896,9 @@ create policy "invite covers delete" on storage.objects for delete to authentica
 revoke all on function public.invite_staff_role()                          from public, anon;
 revoke all on function public.invite_require_manager()                     from public, anon, authenticated;
 revoke all on function public.invite_queue_email(uuid)                     from public, anon, authenticated;
+revoke all on function public.invite_assigned_only()                       from public, anon;
+revoke all on function public.invite_event_allowed(uuid)                   from public, anon, authenticated;
+revoke all on function public.invite_require_event(uuid)                   from public, anon, authenticated;
 revoke all on function public.invite_city_name(uuid, text)                 from public, anon, authenticated;
 revoke all on function public.invite_ticket_email_trg()                    from public, anon, authenticated;
 revoke all on function public.invite_insert_guests(uuid, jsonb)            from public, anon, authenticated;
@@ -860,6 +918,7 @@ revoke all on function public.invite_get_ticket(text)                      from 
 revoke all on function public.invite_scan_ticket(text, uuid)               from public, anon;
 
 grant execute on function public.invite_staff_role()                          to authenticated;
+grant execute on function public.invite_assigned_only()                       to authenticated;
 grant execute on function public.invite_list_cities()                         to authenticated;
 grant execute on function public.invite_list_events()                         to authenticated;
 grant execute on function public.invite_save_event(uuid, jsonb)               to authenticated;

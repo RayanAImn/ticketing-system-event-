@@ -406,5 +406,41 @@ select lives_ok($$ select public.invite_register((select v from ids where k = 's
 select throws_ok($$ select public.invite_register((select v from ids where k = 'slug'), 'Last2', 'last2@x.com') $$, null::char(5), 'event_sold_out', 'second person is refused');
 reset role;
 
+-- ---------------------------------------------------------------- organiser limited to one event
+
+insert into auth.users (id, instance_id, aud, role, email, encrypted_password) values
+  ('10000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'limited@test.local', '');
+insert into public.user_roles (user_id, role_id)
+  select '10000000-0000-0000-0000-0000000000b1'::uuid, id from public.roles where name = 'event_manager';
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
+set local role authenticated;
+select lives_ok($$ insert into ids select 'ev_other', public.invite_save_event(null, pg_temp.event_json('{"name":"Other day"}'))::text $$, 'full organiser makes a second event');
+select is(public.invite_create_tickets((select v::uuid from ids where k = 'ev_other'), '[{"name":"Zed"}]'), 1, 'guest on the second event');
+reset role;
+insert into ids select 'zed', id::text from public.tickets where guest_name = 'Zed';
+insert into public.invite_event_staff (user_id, event_id) values ('10000000-0000-0000-0000-0000000000b1', (select v::uuid from ids where k = 'ev'));
+
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000b1', true);
+set local role authenticated;
+select is(public.invite_assigned_only(), true, 'limited organiser is limited');
+select results_eq($$ select id from public.invite_list_events() $$, $$ select v::uuid from ids where k = 'ev' $$, 'limited organiser sees only their event');
+select ok((select count(*) from public.invite_list_tickets((select v::uuid from ids where k = 'ev'))) > 0, 'limited organiser lists their guests');
+select throws_ok($$ select * from public.invite_list_tickets((select v::uuid from ids where k = 'ev_other')) $$, '42501', 'not_admin', 'cannot list another event''s guests');
+select throws_ok($$ select public.invite_create_tickets((select v::uuid from ids where k = 'ev_other'), '[{"name":"X"}]') $$, '42501', 'not_admin', 'cannot add guests to another event');
+select throws_ok($$ select public.invite_cancel_ticket((select v::uuid from ids where k = 'zed')) $$, '42501', 'not_admin', 'cannot cancel another event''s ticket');
+select throws_ok($$ select public.invite_regenerate_link((select v::uuid from ids where k = 'zed')) $$, '42501', 'not_admin', 'cannot make a new link on another event');
+select throws_ok($$ select public.invite_resend_email((select v::uuid from ids where k = 'zed')) $$, '42501', 'not_admin', 'cannot resend on another event');
+select throws_ok($$ select public.invite_save_event((select v::uuid from ids where k = 'ev_other'), pg_temp.event_json()) $$, '42501', 'not_admin', 'cannot edit another event');
+select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json()) $$, '42501', 'not_admin', 'cannot create events');
+select throws_ok($$ select public.invite_delete_event((select v::uuid from ids where k = 'ev_other')) $$, '42501', 'not_admin', 'cannot delete events');
+select throws_ok($$ select * from public.invite_event_staff $$, '42501', null, 'cannot read or change the limits table');
+reset role;
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
+set local role authenticated;
+select is(public.invite_assigned_only(), false, 'full organiser is not limited');
+select is((select count(*) from public.invite_list_events() where id in ((select v::uuid from ids where k = 'ev'), (select v::uuid from ids where k = 'ev_other')))::int, 2, 'full organiser still sees every event');
+select lives_ok($$ select public.invite_cancel_ticket((select v::uuid from ids where k = 'zed')) $$, 'full organiser still cancels on any event');
+reset role;
+
 select * from finish();
 rollback;

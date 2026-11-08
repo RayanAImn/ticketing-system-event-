@@ -42,6 +42,7 @@
 
   const handlers = {
     invite_staff_role: () => 'admin',
+    invite_assigned_only: () => false,
     invite_list_cities: () => cities,
     invite_list_events: () => events.map((e) => ({ ...e,
       invited: live(e), checked_in: tickets.filter((t) => t.event_id === e.id && t.status === 'redeemed').length })),
