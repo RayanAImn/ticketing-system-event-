@@ -190,7 +190,23 @@ set local role anon;
 select throws_ok($$ select count(*) from public.tickets $$, '42501', null, 'anon cannot read tickets');
 reset role;
 select throws_ok($$ insert into public.tickets (event_id, title) values ((select v::uuid from ids where k = 'ev'), 'x') $$,
-                 '23514', null, 'a ticket with neither user nor guest is still refused');
+                 null, null, 'a ticket with neither user nor guest is still refused');
+
+-- visit's own booking (create_ticket_for_event) must not reach this site's events,
+-- and must keep working for visit's own free events.
+insert into public.events (id, city_id, starts_at, booking_mode, status, price_from)
+values ('20000000-0000-0000-0000-000000000002', (select v::uuid from ids where k = 'city'), now() + interval '5 days', 'ticket', 'Published', 0);
+insert into public.event_translations (event_id, locale, title, summary, description)
+values ('20000000-0000-0000-0000-000000000002', 'en', 'Free visit event', '', '');
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a3', true);
+set local role authenticated;
+select throws_ok($$ select public.create_ticket_for_event((select v::uuid from ids where k = 'ev'), null::text, null::timestamptz, null::text, null::date) $$,
+                 null::char(5), 'invite_event_not_bookable', 'app user cannot book an invite event through visit''s booking');
+select lives_ok($$ select public.create_ticket_for_event('20000000-0000-0000-0000-000000000002'::uuid, null::text, null::timestamptz, null::text, null::date) $$,
+                'visit''s booking still works for visit''s own free events');
+reset role;
+select throws_ok($$ insert into public.tickets (user_id, event_id, title) values ('10000000-0000-0000-0000-0000000000a3', (select v::uuid from ids where k = 'ev'), 'x') $$,
+                 null::char(5), 'invite_event_not_bookable', 'no app ticket for an invite event by any other path');
 
 -- ---------------------------------------------------------------- public page + registration
 

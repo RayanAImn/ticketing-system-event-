@@ -546,6 +546,32 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------- no app bookings
+
+-- visit's create_ticket_for_event doesn't check an event's status, so a signed-in
+-- app user with the id could book these Draft events. Only this site's guest
+-- tickets may be created for them; every other event is unaffected.
+create or replace function public.invite_block_app_ticket()
+returns trigger
+language plpgsql
+security definer
+set search_path to ''
+as $$
+begin
+  if exists (select 1 from public.events e where e.id = new.event_id and e.invite_managed) then
+    raise exception 'invite_event_not_bookable';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists tickets_invite_guests_only on public.tickets;
+create trigger tickets_invite_guests_only
+  before insert on public.tickets
+  for each row
+  when (new.event_id is not null and new.guest_name is null)
+  execute function public.invite_block_app_ticket();
+
 -- ---------------------------------------------------------------- public: event page
 
 create or replace function public.invite_get_event(p_slug text)
@@ -805,6 +831,7 @@ revoke all on function public.invite_create_tickets(uuid, jsonb)           from 
 revoke all on function public.invite_cancel_ticket(uuid)                   from public, anon;
 revoke all on function public.invite_regenerate_link(uuid)                 from public, anon;
 revoke all on function public.invite_resend_email(uuid)                    from public, anon;
+revoke all on function public.invite_block_app_ticket()                    from public, anon, authenticated;
 revoke all on function public.invite_get_event(text)                       from public;
 revoke all on function public.invite_register(text, text, text, text, text) from public;
 revoke all on function public.invite_get_ticket(text)                      from public;

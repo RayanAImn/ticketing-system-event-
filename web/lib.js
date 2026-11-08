@@ -62,9 +62,23 @@
     no_email: 'This guest has no email address.',
     event_not_found: 'Event not found.',
   };
+  // A request that reaches the database without a signed-in user means this
+  // browser lost its login: say so and go back to the login form.
+  const SIGNED_OUT = /permission denied for function|JWT expired|invalid JWT|not_authenticated/i;
   function errText(error) {
     const code = (error && error.message) || String(error);
+    if (SIGNED_OUT.test(code)) {
+      setTimeout(() => location.reload(), 0);
+      return 'You were signed out. Please sign in again.';
+    }
     return ERRORS[code] || code;
+  }
+
+  if (!window.DEMO_DB) {
+    db.auth.onAuthStateChange((event) => {
+      const app = document.getElementById('app');
+      if (event === 'SIGNED_OUT' && app && !app.hidden) location.reload();
+    });
   }
 
   // Signs in a staff user and resolves their role ('admin' | 'scanner'), or null.
@@ -85,7 +99,8 @@
       const { data: { session } } = await db.auth.getSession();
       if (session && !allowed.includes(role)) {
         err.textContent = 'This account has no access to this page.';
-        await db.auth.signOut();
+        // 'local': sign out this browser only, not the account's other devices.
+        await db.auth.signOut({ scope: 'local' });
         role = null;
       }
       form.hidden = !!role;
@@ -106,7 +121,7 @@
   }
 
   async function signOut() {
-    await db.auth.signOut();
+    await db.auth.signOut({ scope: 'local' });
     location.reload();
   }
 
