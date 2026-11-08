@@ -29,6 +29,12 @@ select vault.create_secret('s3cret', 'invite_email_secret');
 create temp table ids (k text primary key, v text);
 grant select, insert on ids to anon, authenticated;
 insert into ids values ('city', (select id::text from public.cities where region_id is not null order by is_sharqia_core desc, id limit 1));
+-- Like Jubail on production: names only in city_translations, empty columns on cities.
+update public.cities set name_en = null, name_ar = null where id = (select v::uuid from ids where k = 'city');
+delete from public.city_translations where city_id = (select v::uuid from ids where k = 'city');
+insert into public.city_translations (city_id, locale, name, summary, description) values
+  ((select v::uuid from ids where k = 'city'), 'en', 'Testcity', '', ''),
+  ((select v::uuid from ids where k = 'city'), 'ar', 'مدينة الاختبار', '', '');
 
 -- An ordinary visit app event and a paying app user's ticket.
 insert into public.events (id, city_id, starts_at, booking_mode, status, price_from)
@@ -92,6 +98,8 @@ select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1
 set local role authenticated;
 select throws_ok($$ select public.invite_queue_email(gen_random_uuid()) $$, '42501', null, 'organiser cannot queue emails directly');
 select ok((select count(*) from public.invite_list_cities()) > 0, 'organiser lists cities');
+select results_eq($$ select name, name_ar from public.invite_list_cities() where id = (select v::uuid from ids where k = 'city') $$,
+                  $$ values ('Testcity'::text, 'مدينة الاختبار'::text) $$, 'city names come from city_translations');
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json('{"name":" "}')) $$, null::char(5), 'name_required', 'name required');
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json('{"city_id":""}')) $$, null::char(5), 'city_required', 'city required');
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json('{"starts_at":null}')) $$, null::char(5), 'start_required', 'start required');
@@ -156,7 +164,7 @@ select ok((select user_id is null and guest_email = 'sara@example.com' and title
            from public.tickets where guest_name = 'Sara'), 'guest stored in visit tickets, marked as emailed');
 select is((select count(*) from pg_temp.invite_calls() c where c->>'guestEmail' = 'sara@example.com')::int, 1, 'invite email queued for Sara');
 select is((select count(*) from pg_temp.invite_calls() c where c->>'guestName' = 'Omar')::int, 0, 'no email for a guest without one');
-select ok((select c->>'eventNameAr' = 'يوم السلامة' and c->'_headers'->>'x-invite-secret' = 's3cret' and length(c->>'linkToken') = 48
+select ok((select c->>'eventNameAr' = 'يوم السلامة' and c->>'city' = 'Testcity' and c->>'cityAr' = 'مدينة الاختبار' and c->'_headers'->>'x-invite-secret' = 's3cret' and length(c->>'linkToken') = 48
            from pg_temp.invite_calls() c where c->>'guestEmail' = 'sara@example.com'), 'email request carries event, secret header and link');
 select ok((select bool_and((convert_from(q.body, 'utf8')::jsonb->'record'->>'email_sent_at') is not null)
            from net.http_request_queue q
@@ -187,6 +195,8 @@ select throws_ok($$ insert into public.tickets (event_id, title) values ((select
 set local role anon;
 select results_eq($$ select name, spots_left, registration_open from public.invite_get_event((select v from ids where k = 'slug')) $$,
                   $$ values ('Safety Day 2026'::text, 1, true) $$, 'public sees the event and spots left');
+select results_eq($$ select city, city_ar from public.invite_get_event((select v from ids where k = 'slug')) $$,
+                  $$ values ('Testcity'::text, 'مدينة الاختبار'::text) $$, 'public page shows translated city names');
 select is((select count(*) from public.invite_get_event((select slug from public.events where id = '20000000-0000-0000-0000-000000000001')))::int, 0,
           'public page never shows a visit app event');
 reset role;

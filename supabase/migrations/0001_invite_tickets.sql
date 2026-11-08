@@ -101,6 +101,24 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------- city names
+
+-- City name in 'en' or 'ar'. visit keeps city names in city_translations; the
+-- name_en / name_ar columns on cities are empty for some cities (e.g. Jubail).
+create or replace function public.invite_city_name(p_city_id uuid, p_locale text)
+returns text
+language sql
+stable
+security definer
+set search_path to ''
+as $$
+  select coalesce(
+    (select nullif(ct.name, '') from public.city_translations ct
+     where ct.city_id = p_city_id and ct.locale = p_locale),
+    (select case when p_locale = 'ar' then c.name_ar else coalesce(c.name_en, c.slug) end
+     from public.cities c where c.id = p_city_id));
+$$;
+
 -- ---------------------------------------------------------------- ticket email
 
 -- Asks the invite-ticket-email edge function to email this ticket. Same pattern
@@ -137,15 +155,14 @@ begin
              'startsAt',    e.starts_at,
              'endsAt',      e.ends_at,
              'venue',       e.venue,
-             'city',        coalesce(c.name_en, c.slug),
-             'cityAr',      c.name_ar,
+             'city',        public.invite_city_name(e.city_id, 'en'),
+             'cityAr',      public.invite_city_name(e.city_id, 'ar'),
              'imageUrl',    e.image_url)
       into v_body
     from public.tickets t
     join public.events e on e.id = t.event_id and e.invite_managed
     left join public.event_translations en on en.event_id = e.id and en.locale = 'en'
     left join public.event_translations ar on ar.event_id = e.id and ar.locale = 'ar'
-    left join public.cities c on c.id = e.city_id
     where t.id = p_ticket_id
       and t.guest_email is not null and t.link_token is not null and t.status = 'active';
 
@@ -191,11 +208,11 @@ stable
 security definer
 set search_path to ''
 as $$
-  select c.id, coalesce(c.name_en, c.slug), c.name_ar
+  select c.id, public.invite_city_name(c.id, 'en'), public.invite_city_name(c.id, 'ar')
   from public.cities c
   where public.invite_staff_role() = 'admin'
     and c.region_id is not null
-  order by c.is_sharqia_core desc, coalesce(c.name_en, c.slug);
+  order by c.is_sharqia_core desc, 2;
 $$;
 
 -- This site's events with guest counts. Organisers and scanners.
@@ -555,7 +572,7 @@ as $$
          coalesce(en.title, e.slug), ar.title,
          nullif(en.description, ''), nullif(ar.description, ''),
          e.starts_at, e.ends_at, e.venue,
-         coalesce(c.name_en, c.slug), c.name_ar,
+         public.invite_city_name(e.city_id, 'en'), public.invite_city_name(e.city_id, 'ar'),
          nullif(e.image_url, ''),
          e.invite_registration_open and coalesce(e.ends_at, e.starts_at) > now(),
          case when e.capacity is null then null
@@ -565,7 +582,6 @@ as $$
   from public.events e
   left join public.event_translations en on en.event_id = e.id and en.locale = 'en'
   left join public.event_translations ar on ar.event_id = e.id and ar.locale = 'ar'
-  left join public.cities c on c.id = e.city_id
   where e.slug = p_slug and e.invite_managed;
 $$;
 
@@ -775,6 +791,7 @@ create policy "invite covers delete" on storage.objects for delete to authentica
 revoke all on function public.invite_staff_role()                          from public, anon;
 revoke all on function public.invite_require_manager()                     from public, anon, authenticated;
 revoke all on function public.invite_queue_email(uuid)                     from public, anon, authenticated;
+revoke all on function public.invite_city_name(uuid, text)                 from public, anon, authenticated;
 revoke all on function public.invite_ticket_email_trg()                    from public, anon, authenticated;
 revoke all on function public.invite_insert_guests(uuid, jsonb)            from public, anon, authenticated;
 revoke all on function public.invite_list_cities()                         from public, anon;
