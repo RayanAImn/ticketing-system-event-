@@ -62,6 +62,9 @@
     ticket_not_active: 'This ticket is no longer active.',
     no_email: 'This guest has no email address.',
     event_not_found: 'Event not found.',
+    cannot_remove_self: 'You cannot remove yourself.',
+    organiser_not_found: 'This organiser was already removed.',
+    could_not_create_account: 'Could not create an account for this email. Try again.',
   };
   // A request that reaches the database without a signed-in user means this
   // browser lost its login: say so and go back to the login form.

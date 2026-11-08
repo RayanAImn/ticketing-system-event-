@@ -161,3 +161,4 @@ button.big { padding: 12px; font-size: 1.05rem; font-weight: 700; }
 .result.ok { background: var(--ok); }
 .result.warn { background: var(--warn); }
 .result.bad { background: var(--bad); }
+.org-row { padding: 8px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }

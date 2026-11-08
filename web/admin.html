@@ -25,6 +25,16 @@
     <p class="login-error"></p>
   </form>
 
+  <!-- from the emailed set-password link -->
+  <form id="setPw" class="card login" hidden>
+    <h1>Set your password</h1>
+    <p class="muted" id="setPwFor"></p>
+    <div class="field"><label>New password</label><input name="password" type="password" minlength="8" required autocomplete="new-password"></div>
+    <div class="field"><label>Repeat password</label><input name="password2" type="password" minlength="8" required autocomplete="new-password"></div>
+    <button class="primary" style="width:100%">Save password</button>
+    <p class="login-error"></p>
+  </form>
+
   <div id="app" hidden>
     <!-- all events -->
     <section id="listView">
@@ -106,6 +116,7 @@
             <a class="btn small" id="openEventLink" target="_blank" rel="noopener">Open</a>
           </div>
           <div class="row" style="margin-top:10px">
+            <a class="btn small" id="scanBtn">Scanner</a>
             <button class="small" id="editBtn">Edit event</button>
             <button class="small danger" id="deleteBtn">Delete</button>
           </div>
@@ -117,6 +128,17 @@
         <div class="stat"><span class="muted">Checked in</span><b id="sIn">0</b></div>
         <div class="stat"><span class="muted">Places left</span><b id="sLeft">0</b></div>
         <div class="stat"><span class="muted">Cancelled</span><b id="sCancel">0</b></div>
+      </div>
+
+      <div class="card">
+        <h2>Organisers</h2>
+        <p class="muted" style="margin-top:-6px; font-size:.88rem">They can manage this event's guests and scan tickets, but no other event. Each one is emailed a link to sign in.</p>
+        <div id="orgList"></div>
+        <form id="addOrg" class="row" style="margin-top:10px">
+          <input name="email" type="email" required placeholder="organiser@example.com" style="flex:1; min-width:200px">
+          <button class="primary">Add organiser</button>
+        </form>
+        <p class="error" id="orgError"></p>
       </div>
 
       <div class="card">
@@ -291,7 +313,9 @@
     $('#evRegState').className = 'pill ' + (c.registration_open ? 'redeemed' : 'cancelled');
     $('#evLink').value = eventUrl(c.slug);
     $('#openEventLink').href = '/e/' + c.slug;
+    $('#scanBtn').href = '/scan?event=' + encodeURIComponent(c.id);
     show('eventView');
+    loadOrganisers();
     await loadTickets();
   }
 
@@ -386,6 +410,36 @@
 
   // ---------------------------------------------------------------- wiring
 
+  // ---------------------------------------------------------------- organisers
+
+  let organisers = [];
+  async function loadOrganisers() {
+    const { data, error } = await db.rpc('invite_list_organisers', { p_event_id: current.id });
+    if (error) { $('#orgList').innerHTML = `<p class="error">${esc(errText(error))}</p>`; return; }
+    organisers = data;
+    $('#orgList').innerHTML = organisers.map((o) => `
+      <div class="row org-row" data-id="${o.user_id}">
+        <span>${esc(o.email)}${o.is_you ? ' <small class="muted">(you)</small>' : ''}</span>
+        <span class="spacer"></span>
+        ${o.signed_in ? '' : '<small class="muted">not signed in yet</small>'}
+        <button class="small" data-act="resend" title="Email the sign-in links again">Resend email</button>
+        ${o.is_you ? '' : '<button class="small danger" data-act="remove">Remove</button>'}
+      </div>`).join('') || '<p class="muted">No organisers added yet.</p>';
+  }
+
+  // Through the invite-organiser function: it makes an account when needed and emails them.
+  async function addOrganiser(email) {
+    const { data, error } = await db.functions.invoke('invite-organiser', { body: { eventId: current.id, email } });
+    if (error) {
+      let code = error.message;
+      try { code = (await error.context.json()).error || code; } catch (_) { /* not JSON */ }
+      throw new Error(errText({ message: code }));
+    }
+    await loadOrganisers();
+    if (data.result === 'full_organiser') return `${email} already manages every event.`;
+    return data.emailed ? `Added. ${email} was emailed a sign-in link.` : 'Added, but the email could not be sent.';
+  }
+
   // An organiser limited to one event goes straight into it.
   async function start() {
     const { data } = await db.rpc('invite_assigned_only');
@@ -395,7 +449,36 @@
     if (assignedOnly && events.length === 1) openEvent(events[0].id);
   }
 
-  setupLogin({ form: $('#login'), app: $('#app'), allowed: ['admin'], onReady: start });
+  // The emailed link carries a one-time token: sign in with it, then set a password.
+  async function setPasswordFirst() {
+    const q = new URLSearchParams(location.search);
+    const tokenHash = q.get('token_hash');
+    if (!tokenHash || q.get('type') !== 'recovery') return;
+    history.replaceState(null, '', location.pathname);
+    const f = $('#setPw'), err = $('.login-error', f);
+    f.hidden = false;
+    const { data, error } = await db.auth.verifyOtp({ token_hash: tokenHash, type: 'recovery' });
+    if (error) {
+      err.textContent = 'This link has expired or was already used. Ask an organiser to resend it, or sign in below.';
+      f.querySelector('button').disabled = true;
+      return;
+    }
+    $('#setPwFor').textContent = data.user && data.user.email;
+    await new Promise((done) => {
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        err.textContent = '';
+        if (f.password.value !== f.password2.value) { err.textContent = 'The passwords do not match.'; return; }
+        const { error: upErr } = await db.auth.updateUser({ password: f.password.value });
+        if (upErr) { err.textContent = upErr.message; return; }
+        f.hidden = true;
+        done();
+      };
+    });
+  }
+
+  setPasswordFirst().then(() =>
+    setupLogin({ form: $('#login'), app: $('#app'), allowed: ['admin'], onReady: start }));
   $('#signout').onclick = signOut;
   $('#newBtn').onclick = () => openEditor(null);
   $('#editBtn').onclick = () => openEditor(current);
@@ -417,6 +500,35 @@
     if (error) { alert(errText(error)); return; }
     show('listView');
     loadEvents();
+  };
+
+  $('#addOrg').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target, btn = f.querySelector('button');
+    $('#orgError').textContent = '';
+    btn.disabled = true;
+    try {
+      $('#orgError').textContent = await addOrganiser(f.email.value.trim());
+      f.reset();
+    } catch (err) { $('#orgError').textContent = err.message; }
+    btn.disabled = false;
+  };
+
+  $('#orgList').onclick = async (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const o = organisers.find((x) => x.user_id === btn.closest('[data-id]').dataset.id);
+    $('#orgError').textContent = '';
+    if (btn.dataset.act === 'remove') {
+      if (!confirm(`Remove ${o.email} as organiser of this event?`)) return;
+      const { error } = await db.rpc('invite_remove_organiser', { p_event_id: current.id, p_user_id: o.user_id });
+      if (error) { $('#orgError').textContent = errText(error); return; }
+      loadOrganisers();
+    } else {
+      btn.disabled = true;
+      try { $('#orgError').textContent = await addOrganiser(o.email); } catch (err) { $('#orgError').textContent = err.message; }
+      btn.disabled = false;
+    }
   };
 
   $('#addGuest').onsubmit = async (e) => {

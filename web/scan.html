@@ -66,6 +66,9 @@
     const sel = $('#event');
     if (error) { sel.innerHTML = '<option>Could not load events</option>'; return; }
     sel.innerHTML = data.map((e) => `<option value="${e.id}">${esc(e.name)}</option>`).join('');
+    // Opened from an event page: that event is chosen.
+    const want = new URLSearchParams(location.search).get('event');
+    if (want && data.some((e) => e.id === want)) sel.value = want;
   }
 
   function show(kind, title, detail) {

@@ -72,7 +72,8 @@ alter table public.events
 
 insert into public.roles (name, description) values
   ('event_manager',  'Creates and manages JESCO invite events'),
-  ('ticket_scanner', 'Can scan invite tickets at the gate')
+  ('ticket_scanner', 'Can scan invite tickets at the gate'),
+  ('event_organiser', 'Manages only the JESCO invite events they were added to')
 on conflict (name) do nothing;
 
 -- 'admin' (event_manager) | 'scanner' (ticket_scanner) | null for the signed-in user.
@@ -84,13 +85,13 @@ security definer
 set search_path to ''
 as $$
   select case
-    when bool_or(r.name = 'event_manager')  then 'admin'
+    when bool_or(r.name in ('event_manager', 'event_organiser')) then 'admin'
     when bool_or(r.name = 'ticket_scanner') then 'scanner'
   end
   from public.user_roles ur
   join public.roles r on r.id = ur.role_id
   where ur.user_id = auth.uid()
-    and r.name in ('event_manager', 'ticket_scanner');
+    and r.name in ('event_manager', 'event_organiser', 'ticket_scanner');
 $$;
 
 create or replace function public.invite_require_manager()
@@ -107,9 +108,9 @@ begin
 end;
 $$;
 
--- Organisers limited to some events. An organiser with rows here sees and manages
--- only those events and cannot create or delete events; one without rows manages all.
--- Add one: insert into public.invite_event_staff (user_id, event_id) values (...);
+-- Events an 'event_organiser' may manage. Such an organiser sees and manages only
+-- these events and cannot create or delete events. 'event_manager' manages all.
+-- Organisers add each other from the event page (invite_add_organiser).
 create table if not exists public.invite_event_staff (
   user_id  uuid not null references auth.users (id) on delete cascade,
   event_id uuid not null references public.events (id) on delete cascade,
@@ -125,7 +126,11 @@ stable
 security definer
 set search_path to ''
 as $$
-  select exists (select 1 from public.invite_event_staff s where s.user_id = auth.uid());
+  select coalesce(bool_or(r.name = 'event_organiser') and not bool_or(r.name = 'event_manager'), false)
+  from public.user_roles ur
+  join public.roles r on r.id = ur.role_id
+  where ur.user_id = auth.uid()
+    and r.name in ('event_manager', 'event_organiser');
 $$;
 
 create or replace function public.invite_event_allowed(p_event_id uuid)
@@ -618,6 +623,86 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------- organiser: other organisers
+
+-- Organisers added to this event (not the event_managers, who manage every event).
+create or replace function public.invite_list_organisers(p_event_id uuid)
+returns table (user_id uuid, email text, signed_in boolean, is_you boolean)
+language plpgsql
+stable
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+begin
+  perform public.invite_require_event(p_event_id);
+  return query
+  select u.id, u.email::text, u.last_sign_in_at is not null, u.id = auth.uid()
+  from public.invite_event_staff s
+  join auth.users u on u.id = s.user_id
+  where s.event_id = p_event_id
+  order by lower(u.email);
+end;
+$$;
+
+-- Adds an existing account as an organiser of this event only. Returns 'added',
+-- 'full_organiser' (already manages every event: nothing to do) or 'no_account'
+-- (the invite-organiser edge function then creates the account and calls again).
+create or replace function public.invite_add_organiser(p_event_id uuid, p_email text)
+returns text
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+declare
+  v_email text := lower(trim(coalesce(p_email, '')));
+  v_user  uuid;
+begin
+  perform public.invite_require_event(p_event_id);
+  perform 1 from public.events where id = p_event_id and invite_managed;
+  if not found then raise exception 'event_not_found'; end if;
+  if length(v_email) > 200 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'bad_email';
+  end if;
+
+  select u.id into v_user from auth.users u where lower(u.email) = v_email limit 1;
+  if v_user is null then return 'no_account'; end if;
+  if exists (select 1 from public.user_roles ur join public.roles r on r.id = ur.role_id
+             where ur.user_id = v_user and r.name = 'event_manager') then
+    return 'full_organiser';
+  end if;
+
+  insert into public.user_roles (user_id, role_id)
+  select v_user, r.id from public.roles r
+  where r.name = 'event_organiser'
+    and not exists (select 1 from public.user_roles ur where ur.user_id = v_user and ur.role_id = r.id);
+  insert into public.invite_event_staff (user_id, event_id) values (v_user, p_event_id)
+  on conflict do nothing;
+  return 'added';
+end;
+$$;
+
+-- Removes an organiser from this event; with no events left they lose the role.
+create or replace function public.invite_remove_organiser(p_event_id uuid, p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+begin
+  perform public.invite_require_event(p_event_id);
+  if p_user_id = auth.uid() then raise exception 'cannot_remove_self'; end if;
+  delete from public.invite_event_staff where event_id = p_event_id and user_id = p_user_id;
+  if not found then raise exception 'organiser_not_found'; end if;
+  if not exists (select 1 from public.invite_event_staff where user_id = p_user_id) then
+    delete from public.user_roles ur using public.roles r
+    where r.id = ur.role_id and ur.user_id = p_user_id and r.name = 'event_organiser';
+  end if;
+end;
+$$;
+
 -- ---------------------------------------------------------------- no app bookings
 
 -- visit's create_ticket_for_event doesn't check an event's status, so a signed-in
@@ -842,7 +927,8 @@ begin
     return;
   end if;
 
-  if p_event_id is not null and v_ticket.event_id is distinct from p_event_id then
+  if (p_event_id is not null and v_ticket.event_id is distinct from p_event_id)
+     or not public.invite_event_allowed(v_ticket.event_id) then
     v_status := 'wrong_event';
   elsif v_ticket.status = 'cancelled' then
     v_status := 'ticket_cancelled';
@@ -899,6 +985,9 @@ revoke all on function public.invite_queue_email(uuid)                     from 
 revoke all on function public.invite_assigned_only()                       from public, anon;
 revoke all on function public.invite_event_allowed(uuid)                   from public, anon, authenticated;
 revoke all on function public.invite_require_event(uuid)                   from public, anon, authenticated;
+revoke all on function public.invite_list_organisers(uuid)                 from public, anon;
+revoke all on function public.invite_add_organiser(uuid, text)             from public, anon;
+revoke all on function public.invite_remove_organiser(uuid, uuid)          from public, anon;
 revoke all on function public.invite_city_name(uuid, text)                 from public, anon, authenticated;
 revoke all on function public.invite_ticket_email_trg()                    from public, anon, authenticated;
 revoke all on function public.invite_insert_guests(uuid, jsonb)            from public, anon, authenticated;
@@ -919,6 +1008,9 @@ revoke all on function public.invite_scan_ticket(text, uuid)               from 
 
 grant execute on function public.invite_staff_role()                          to authenticated;
 grant execute on function public.invite_assigned_only()                       to authenticated;
+grant execute on function public.invite_list_organisers(uuid)                 to authenticated;
+grant execute on function public.invite_add_organiser(uuid, text)             to authenticated;
+grant execute on function public.invite_remove_organiser(uuid, uuid)          to authenticated;
 grant execute on function public.invite_list_cities()                         to authenticated;
 grant execute on function public.invite_list_events()                         to authenticated;
 grant execute on function public.invite_save_event(uuid, jsonb)               to authenticated;

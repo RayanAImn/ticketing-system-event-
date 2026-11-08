@@ -409,15 +409,17 @@ reset role;
 -- ---------------------------------------------------------------- organiser limited to one event
 
 insert into auth.users (id, instance_id, aud, role, email, encrypted_password) values
-  ('10000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'limited@test.local', '');
+  ('10000000-0000-0000-0000-0000000000b1', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'limited@test.local', ''),
+  ('10000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'second@test.local', '');
 insert into public.user_roles (user_id, role_id)
-  select '10000000-0000-0000-0000-0000000000b1'::uuid, id from public.roles where name = 'event_manager';
+  select '10000000-0000-0000-0000-0000000000b1'::uuid, id from public.roles where name = 'event_organiser';
 select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
 set local role authenticated;
 select lives_ok($$ insert into ids select 'ev_other', public.invite_save_event(null, pg_temp.event_json('{"name":"Other day"}'))::text $$, 'full organiser makes a second event');
 select is(public.invite_create_tickets((select v::uuid from ids where k = 'ev_other'), '[{"name":"Zed"}]'), 1, 'guest on the second event');
 reset role;
 insert into ids select 'zed', id::text from public.tickets where guest_name = 'Zed';
+insert into ids select 'zed_qr', qr_token from public.tickets where guest_name = 'Zed';
 insert into public.invite_event_staff (user_id, event_id) values ('10000000-0000-0000-0000-0000000000b1', (select v::uuid from ids where k = 'ev'));
 
 select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000b1', true);
@@ -434,6 +436,40 @@ select throws_ok($$ select public.invite_save_event((select v::uuid from ids whe
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json()) $$, '42501', 'not_admin', 'cannot create events');
 select throws_ok($$ select public.invite_delete_event((select v::uuid from ids where k = 'ev_other')) $$, '42501', 'not_admin', 'cannot delete events');
 select throws_ok($$ select * from public.invite_event_staff $$, '42501', null, 'cannot read or change the limits table');
+select is((select status from public.invite_scan_ticket((select v from ids where k = 'zed_qr'))), 'wrong_event', 'limited organiser cannot check in another event''s guest');
+
+-- adding and removing organisers
+select results_eq($$ select email, is_you from public.invite_list_organisers((select v::uuid from ids where k = 'ev')) $$,
+                  $$ values ('limited@test.local'::text, true) $$, 'organiser sees the event''s organisers');
+select throws_ok($$ select * from public.invite_list_organisers((select v::uuid from ids where k = 'ev_other')) $$, '42501', 'not_admin', 'cannot see another event''s organisers');
+select is(public.invite_add_organiser((select v::uuid from ids where k = 'ev'), 'nobody@x.com'), 'no_account', 'unknown email: no account yet');
+select throws_ok($$ select public.invite_add_organiser((select v::uuid from ids where k = 'ev'), 'nope') $$, null::char(5), 'bad_email', 'organiser email checked');
+select is(public.invite_add_organiser((select v::uuid from ids where k = 'ev'), ' Second@Test.local '), 'added', 'organiser adds another organiser');
+select is(public.invite_add_organiser((select v::uuid from ids where k = 'ev'), 'second@test.local'), 'added', 'adding again is harmless');
+select is(public.invite_add_organiser((select v::uuid from ids where k = 'ev'), 'mgr@test.local'), 'full_organiser', 'a full organiser is left as is');
+select throws_ok($$ select public.invite_add_organiser((select v::uuid from ids where k = 'ev_other'), 'second@test.local') $$, '42501', 'not_admin', 'cannot add organisers to another event');
+select throws_ok($$ select public.invite_remove_organiser((select v::uuid from ids where k = 'ev'), '10000000-0000-0000-0000-0000000000b1') $$, null::char(5), 'cannot_remove_self', 'cannot remove yourself');
+reset role;
+
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000b2', true);
+set local role authenticated;
+select is(public.invite_staff_role(), 'admin', 'added organiser can sign in to the organiser page');
+select results_eq($$ select id from public.invite_list_events() $$, $$ select v::uuid from ids where k = 'ev' $$, 'added organiser sees only that event');
+select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json()) $$, '42501', 'not_admin', 'added organiser cannot create events');
+reset role;
+
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000b1', true);
+set local role authenticated;
+select lives_ok($$ select public.invite_remove_organiser((select v::uuid from ids where k = 'ev'), '10000000-0000-0000-0000-0000000000b2') $$, 'organiser removes another organiser');
+reset role;
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000b2', true);
+set local role authenticated;
+select is(public.invite_staff_role(), null, 'removed organiser has no access left');
+select is((select count(*) from public.invite_list_events())::int, 0, 'removed organiser sees no events');
+reset role;
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
+set local role authenticated;
+select is(public.invite_assigned_only(), false, 'full organiser not limited by being "added"');
 reset role;
 select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
 set local role authenticated;

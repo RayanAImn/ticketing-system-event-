@@ -43,6 +43,8 @@
   const handlers = {
     invite_staff_role: () => 'admin',
     invite_assigned_only: () => false,
+    invite_list_organisers: () => [{ user_id: 'u1', email: 'organiser@example.com', signed_in: true, is_you: true }],
+    invite_remove_organiser: () => null,
     invite_list_cities: () => cities,
     invite_list_events: () => events.map((e) => ({ ...e,
       invited: live(e), checked_in: tickets.filter((t) => t.event_id === e.id && t.status === 'redeemed').length })),
@@ -121,6 +123,8 @@
       signInWithPassword: async () => ({ error: null }),
       signOut: async () => { try { sessionStorage.removeItem('demo'); } catch { /* ignore */ } },
     },
+    // invite-organiser: pretends the organiser was added and emailed.
+    functions: { invoke: async () => ({ data: { result: 'added', emailed: true }, error: null }) },
     storage: {
       from: () => ({
         // Shows the picked image without uploading it anywhere.
