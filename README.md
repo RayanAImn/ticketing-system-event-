@@ -55,6 +55,20 @@ npm run dev
 ```
 Then open `http://localhost:5173/?demo`.
 
+## Tests
+
+- **Email function** (offline; nothing is sent): `npm install`, then `npm run test:email`.
+- **Database** (`supabase/tests/invite_tickets_test.sql`, pgTAP, 115 checks): run against a local copy of visit's database in Docker. Everything runs in one transaction that is rolled back.
+  1. Start Docker Desktop.
+  2. Make a folder outside visit-app with a `supabase/` folder holding a copy of visit-app's `supabase/config.toml`. Change its `project_id` and ports, and remove the `[functions.*]` sections.
+  3. Copy in visit-app's `supabase/migrations/*`, then add `supabase/migrations/0001_invite_tickets.sql` as the newest migration and this test into `supabase/tests/database/`.
+  4. Run `npx supabase@^2 start`, then `npx supabase@^2 test db`.
+
+  Visit's migration history doesn't rebuild production on its own. The test copy needs:
+  - `events.end_time` added before `20261025120000_event_venue_name.sql`
+  - unique numbers for three pairs of migrations that share a version
+  - production's `tickets.email_sent_at` column and `send_ticket_email` webhook added after the last visit migration
+
 ## Notes
 
 - Emails share visit's Resend account and quota. Resend accepts a few emails per second; the function waits and retries, so a big list import is emailed over a minute or two.

@@ -1,7 +1,11 @@
-﻿{
+{
   "name": "ticketing-system-event",
   "private": true,
   "scripts": {
-    "dev": "npx -y serve@14.2.4 web -l 5173 -c ../serve.json"
+    "dev": "npx -y serve@14.2.4 web -l 5173 -c ../serve.json",
+    "test:email": "node supabase/tests/email_function_test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.0"
   }
 }
