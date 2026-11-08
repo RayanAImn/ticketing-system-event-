@@ -3,6 +3,7 @@
   "cleanUrls": true,
   "rewrites": [
     { "source": "/t/:token", "destination": "/ticket.html" },
+    { "source": "/e/:slug", "destination": "/event.html" },
     { "source": "/", "destination": "/admin.html" }
   ],
   "headers": [

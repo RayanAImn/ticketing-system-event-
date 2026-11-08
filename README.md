@@ -1,66 +1,77 @@
-﻿# Event Tickets (invite-only)
+# Event Tickets (JESCO)
 
-Invite-only guest tickets for one event, stored in the **visit app's own `tickets` table** in the visit Supabase project (`vdsuwbpvpdzdmmexmgzz`). Guest tickets are free tickets with a guest name instead of an app account. The site's code lives here, outside visit-app.
-
-- **Admins** add guests, one at a time or from a pasted list or CSV. Each guest gets a ticket.
-- **Guests** never sign up. They open a personal link `/t/<token>` that shows their name, the event details and a QR code.
-- **Staff** scan the QR at the entrance on `/scan`. Each ticket gets in once. A second scan shows "Already used".
+A Luma-style event site whose data lives in the **visit app's own `events` and `tickets` tables** in the visit Supabase project (`vdsuwbpvpdzdmmexmgzz`). The site's code lives here, outside visit-app.
 
 | Page | Who | What |
 |---|---|---|
-| `/admin` (also `/`) | admin | create event, add/import guests, copy link / WhatsApp, new link, cancel, live check-in counts, CSV export |
+| `/` | organiser (`event_manager`) | create and edit events (cover, name EN/AR, dates, venue, city, capacity, public registration on/off), add or import guests, resend email, copy link, WhatsApp, new link, cancel, live counts, CSV |
+| `/e/<slug>` | anyone with the link | event page with a sign-up form, until the capacity is full |
 | `/t/<token>` | guest | the ticket with QR, Arabic + English |
-| `/scan` | admin, scanner | camera scanner + manual entry |
+| `/scan` | organiser, scanner (`ticket_scanner`) | camera scanner + manual entry |
+
+Every guest with an email gets their ticket by email, sent from visit's sender (`noreply@visitapp.sa`) with this event's own content. Add `?demo` to any page to try it with sample data and no database.
 
 ## What the SQL changes in visit's database
 
-- **`tickets`:** `user_id` may now be empty for guest tickets, and 5 columns are added: `guest_name`, `guest_phone`, `guest_email`, `guest_note`, `link_token`. A rule still requires every ticket to have an app user or a guest name.
-- **`roles`:** one new row, `ticket_scanner`.
-- **8 new functions:** `invite_staff_role`, `invite_list_events`, `invite_list_tickets`, `invite_create_tickets`, `invite_cancel_ticket`, `invite_regenerate_link`, `invite_get_ticket`, `invite_scan_ticket`.
-- **No new tables.** `events`, `ticket_payments`, the payment and ticket functions, the `mobile_*` views, Moyasar and Tamara are untouched.
+`supabase/migrations/0001_invite_tickets.sql`:
 
-App users still see only their own tickets, so guest tickets never appear in anyone's app wallet. visit's own scanner (`scan_ticket_qr` and the dashboard's `/admin/scan`) also accepts guest tickets.
+- **`tickets`:** `user_id` may be empty for guest tickets; adds `guest_name`, `guest_phone`, `guest_email`, `guest_note`, `link_token`. A rule still requires every ticket to have an app user or a guest name. One live ticket per email per event.
+- **`events`:** adds `invite_managed` (marks this site's events) and `invite_registration_open`. Events made here are saved as **Draft**, ticket mode, free, hidden from "view all", so the visit app never shows them. They do appear as Draft in the visit admin dashboard.
+- **`roles`:** two new rows, `event_manager` and `ticket_scanner`. Visit admins get no access to this site.
+- **Functions:** all named `invite_*`, each checking the role on the server.
+- **Trigger:** `tickets_invite_email` runs after a guest ticket with an email is inserted. App tickets never trigger it.
+- **Storage:** organisers may upload covers only to `events/invite/<their id>/`.
+- **Not touched:** `ticket_payments`, visit's ticket, payment and scan functions, the `mobile_*` views, Moyasar, Tamara, visit's `send-booking-email`.
+
+Every function only works on events with `invite_managed = true`, so visit app events and tickets cannot be read, changed or scanned from this site.
 
 ## Setup (one time)
 
 1. **Run the SQL.** Paste `supabase/migrations/0001_invite_tickets.sql` into the SQL editor (https://supabase.com/dashboard/project/vdsuwbpvpdzdmmexmgzz/sql/new) and run it.
-2. **Create the event** in the visit admin dashboard with status **Draft**, booking mode **Ticket** and no price. Draft events never show in the app. Set a capacity if there is a limit.
-3. **Admins** are the existing visit admins (`admin_users`). **Gate staff** need the scanner role:
+2. **Email secret.** Make one random value and store it in two places:
+   ```sql
+   select vault.create_secret('<random value>', 'invite_email_secret');
+   ```
+   ```
+   npx supabase secrets set --project-ref vdsuwbpvpdzdmmexmgzz INVITE_EMAIL_SECRET=<random value> INVITE_SITE_URL=https://<this site's domain>
+   ```
+   `RESEND_API_KEY`, `RESEND_FROM_EMAIL` and the Vault secret `project_url` already exist for visit.
+3. **Deploy the email function:**
+   ```
+   npx supabase functions deploy invite-ticket-email --project-ref vdsuwbpvpdzdmmexmgzz --no-verify-jwt
+   ```
+4. **Roles.** Organisers and gate staff sign in with email and password:
    ```sql
    insert into public.user_roles (user_id, role_id)
    select u.id, r.id from auth.users u, public.roles r
-   where u.email = 'gate1@example.com' and r.name = 'ticket_scanner';
+   where u.email = 'organiser@example.com' and r.name = 'event_manager';   -- or 'ticket_scanner'
    ```
-   Staff sign in with email and password.
-4. **Config:** `web/config.js` already has the visit project URL and public key.
-5. **Deploy:** import this folder into Vercel as a **new** project (not `visit-app`). The camera needs HTTPS, which Vercel provides.
+5. **Deploy the site:** import this folder into Vercel as a **new** project (not `visit-app`). The camera needs HTTPS, which Vercel provides.
 
 ## Run locally
 
 ```
 npm run dev
 ```
-Then open `http://localhost:5173`. It opens the admin page at `/`, and `/t/<token>` ticket links work locally too.
+Then open `http://localhost:5173/?demo`.
+
+## Notes
+
+- Emails share visit's Resend account and quota. Resend accepts a few emails per second; the function waits and retries, so a big list import is emailed over a minute or two.
+- A failed email never blocks a ticket. Use **Resend email** on the guest's row.
+- Someone signing up again with the same email doesn't see the ticket; it is emailed to that inbox again (at most 3 times an hour).
+- Sign-ups are limited to 60 per 10 minutes per IP address (a whole office may share one).
+- A guest link holds 48 random hex characters and the QR holds 64. If a link reaches the wrong person, use **New link**: the old link and QR stop working and the guest is emailed the new one.
 
 ## Removing it later
 
 ```sql
-drop function if exists public.invite_scan_ticket(text, uuid), public.invite_get_ticket(text),
-  public.invite_regenerate_link(uuid), public.invite_cancel_ticket(uuid),
-  public.invite_create_tickets(uuid, jsonb), public.invite_list_tickets(uuid),
-  public.invite_list_events(), public.invite_staff_role();
--- The guest columns can stay. To drop them, delete the guest tickets first,
--- then drop the tickets_user_or_guest constraint and restore user_id NOT NULL.
+drop trigger if exists tickets_invite_email on public.tickets;
+drop policy if exists "invite covers insert" on storage.objects;
+drop policy if exists "invite covers update" on storage.objects;
+drop policy if exists "invite covers delete" on storage.objects;
+-- then drop the public.invite_* functions. The new columns can stay.
 ```
-
-## Security notes
-
-- Guest rows have no user, so visit's rule that app users read only their own tickets keeps them hidden from every app user.
-- Tickets are created only by `invite_create_tickets`, which checks visit's admin role on the server and accepts only Draft, free, ticket-mode events.
-- `invite_scan_ticket` checks the admin or ticket_scanner role on the server. visit's `scan_ticket_qr` lets any signed-in user scan; that gap is unchanged for the app's own scanner.
-- A guest link holds 48 random hex characters and the QR holds 64. Neither can be guessed. Anyone who has the link can show the ticket, but it can be scanned only once.
-- If a link reaches the wrong person, use **New link**. The old link and QR stop working, so send the guest the new one.
-- **Cancel** blocks the ticket at the gate, and the guest's page shows it as cancelled.
 
 ## Branding (JESCO & ArcelorMittal Safety Event)
 

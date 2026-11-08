@@ -3,6 +3,7 @@
   "directoryListing": false,
   "rewrites": [
     { "source": "/", "destination": "/admin.html" },
-    { "source": "/t/:token", "destination": "/ticket.html" }
+    { "source": "/t/:token", "destination": "/ticket.html" },
+    { "source": "/e/:slug", "destination": "/event.html" }
   ]
 }

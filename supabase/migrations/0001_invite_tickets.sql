@@ -1,8 +1,11 @@
--- Invite-only guest tickets, stored in visit's own public.tickets table.
+-- JESCO event tickets, stored in visit's own public.events and public.tickets.
 --
--- Guests have no app account: an admin issues a free ticket for a named guest and
--- sends the guest a personal link (/t/<link_token>). Staff scan the ticket's
--- existing qr_token at the gate.
+-- Organisers (role 'event_manager') create events and add guests on this site.
+-- Anyone with an event's public link (/e/<slug>) can register while places are
+-- left. Each guest gets a ticket page (/t/<link_token>) and, if they gave an
+-- email, the ticket by email (sent by the invite-ticket-email edge function
+-- through visit's Resend sender). Gate staff (role 'ticket_scanner') scan the
+-- ticket's qr_token on /scan.
 --
 -- Changes to existing visit objects (all additive except one):
 --   * tickets.user_id becomes nullable. Every existing reader compares it to a
@@ -10,16 +13,23 @@
 --     supplier/cancellation functions), so rows with a null user are never matched.
 --     A check constraint still requires every row to have a user OR a guest name.
 --   * tickets gains guest_name, guest_phone, guest_email, guest_note, link_token.
---   * a 'ticket_scanner' row in public.roles (data only).
--- Not touched: events, ticket_payments, every create_ticket_* / payment / scan
--- function, mobile_* views, Moyasar and Tamara.
+--   * events gains invite_managed and invite_registration_open. Events made here
+--     are saved as status 'Draft' (visit's public reads and the app only show
+--     'Published'), ticket mode, free, not in "view all".
+--   * 'event_manager' and 'ticket_scanner' rows in public.roles (data only).
+--   * insert/update/delete policies on storage.objects for the 'events' bucket,
+--     limited to the folder invite/<organiser id>/ (cover images).
+--   * an AFTER INSERT trigger on tickets that only fires for guest rows.
+--   * guest tickets are saved with email_sent_at already set, so visit's existing
+--     send_ticket_email webhook skips them (it would otherwise fall back to a
+--     default inbox, as a guest ticket has no app user).
+-- Not touched: ticket_payments, every create_ticket_* / payment / scan function,
+-- mobile_* views, Moyasar and Tamara. Visit admins get no access to this site.
 --
--- The event is an ordinary visit event created in the visit admin dashboard with
--- status 'Draft' (mobile_events only shows 'Published', so the app never lists it),
--- booking_mode 'ticket' and no price.
---
--- Admins  = existing visit admins (public.is_admin(), table admin_users).
--- Scanners = users given the 'ticket_scanner' role in public.user_roles, or admins.
+-- Email needs one new Vault secret (project_url already exists for visit's
+-- booking email):
+--   select vault.create_secret('<random value>', 'invite_email_secret');
+-- with the same value set as the INVITE_EMAIL_SECRET function secret.
 --
 -- Run once in the Supabase SQL editor.
 
@@ -34,21 +44,32 @@ alter table public.tickets
   add column if not exists guest_note  text,
   add column if not exists link_token  text;
 
+alter table public.tickets drop constraint if exists tickets_user_or_guest;
 alter table public.tickets
   add constraint tickets_user_or_guest check (user_id is not null or guest_name is not null);
 
 create unique index if not exists tickets_link_token_uidx
   on public.tickets (link_token) where link_token is not null;
 
--- ---------------------------------------------------------------- scanner role (data)
+-- One live ticket per email per event (cancelled ones don't count).
+create unique index if not exists tickets_guest_email_uidx
+  on public.tickets (event_id, lower(guest_email))
+  where guest_email is not null and status <> 'cancelled';
 
-insert into public.roles (name, description)
-values ('ticket_scanner', 'Can scan invite tickets at the gate')
+-- ---------------------------------------------------------------- events: invite columns
+
+alter table public.events
+  add column if not exists invite_managed           boolean not null default false,
+  add column if not exists invite_registration_open boolean not null default false;
+
+-- ---------------------------------------------------------------- roles (data)
+
+insert into public.roles (name, description) values
+  ('event_manager',  'Creates and manages JESCO invite events'),
+  ('ticket_scanner', 'Can scan invite tickets at the gate')
 on conflict (name) do nothing;
 
--- ---------------------------------------------------------------- staff role
-
--- 'admin' | 'scanner' | null for the signed-in user.
+-- 'admin' (event_manager) | 'scanner' (ticket_scanner) | null for the signed-in user.
 create or replace function public.invite_staff_role()
 returns text
 language sql
@@ -57,52 +78,271 @@ security definer
 set search_path to ''
 as $$
   select case
-    when public.is_admin() then 'admin'
-    when exists (
-      select 1 from public.user_roles ur
-      join public.roles r on r.id = ur.role_id
-      where ur.user_id = auth.uid() and r.name = 'ticket_scanner'
-    ) then 'scanner'
-  end;
+    when bool_or(r.name = 'event_manager')  then 'admin'
+    when bool_or(r.name = 'ticket_scanner') then 'scanner'
+  end
+  from public.user_roles ur
+  join public.roles r on r.id = ur.role_id
+  where ur.user_id = auth.uid()
+    and r.name in ('event_manager', 'ticket_scanner');
 $$;
 
--- ---------------------------------------------------------------- events usable for invites
+create or replace function public.invite_require_manager()
+returns void
+language plpgsql
+stable
+security definer
+set search_path to ''
+as $$
+begin
+  if public.invite_staff_role() is distinct from 'admin' then
+    raise exception 'not_admin' using errcode = '42501';
+  end if;
+end;
+$$;
 
--- Draft, free, ticket-mode visit events, with guest counts. Staff only.
-create or replace function public.invite_list_events()
-returns table (
-  id          uuid,
-  name        text,
-  starts_at   timestamptz,
-  venue       text,
-  capacity    integer,
-  invited     bigint,
-  checked_in  bigint
-)
+-- ---------------------------------------------------------------- ticket email
+
+-- Asks the invite-ticket-email edge function to email this ticket. Same pattern
+-- as visit's notify_booking_email: config from Vault, pg_net, and best-effort
+-- (a failure is a warning and never blocks the ticket). pg_net sends after the
+-- transaction commits, so a rolled-back ticket is never emailed.
+create or replace function public.invite_queue_email(p_ticket_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+declare
+  v_project_url text;
+  v_secret      text;
+  v_body        jsonb;
+begin
+  begin
+    select decrypted_secret into v_project_url from vault.decrypted_secrets where name = 'project_url';
+    select decrypted_secret into v_secret      from vault.decrypted_secrets where name = 'invite_email_secret';
+    if v_project_url is null or v_secret is null then
+      raise warning 'invite_queue_email: vault secrets missing, email skipped for ticket %', p_ticket_id;
+      return;
+    end if;
+
+    select jsonb_build_object(
+             'ticketId',    t.id,
+             'guestName',   t.guest_name,
+             'guestEmail',  t.guest_email,
+             'linkToken',   t.link_token,
+             'eventName',   coalesce(en.title, e.slug),
+             'eventNameAr', ar.title,
+             'startsAt',    e.starts_at,
+             'endsAt',      e.ends_at,
+             'venue',       e.venue,
+             'city',        coalesce(c.name_en, c.slug),
+             'cityAr',      c.name_ar,
+             'imageUrl',    e.image_url)
+      into v_body
+    from public.tickets t
+    join public.events e on e.id = t.event_id and e.invite_managed
+    left join public.event_translations en on en.event_id = e.id and en.locale = 'en'
+    left join public.event_translations ar on ar.event_id = e.id and ar.locale = 'ar'
+    left join public.cities c on c.id = e.city_id
+    where t.id = p_ticket_id
+      and t.guest_email is not null and t.link_token is not null and t.status = 'active';
+
+    if v_body is null then return; end if;
+
+    perform net.http_post(
+      url     := rtrim(v_project_url, '/') || '/functions/v1/invite-ticket-email',
+      body    := v_body,
+      headers := jsonb_build_object('Content-Type', 'application/json', 'x-invite-secret', v_secret),
+      timeout_milliseconds := 60000
+    );
+  exception when others then
+    raise warning 'invite_queue_email failed for ticket %: %', p_ticket_id, sqlerrm;
+  end;
+end;
+$$;
+
+create or replace function public.invite_ticket_email_trg()
+returns trigger
+language plpgsql
+security definer
+set search_path to ''
+as $$
+begin
+  perform public.invite_queue_email(new.id);
+  return new;
+end;
+$$;
+
+drop trigger if exists tickets_invite_email on public.tickets;
+create trigger tickets_invite_email
+  after insert on public.tickets
+  for each row
+  when (new.guest_email is not null and new.link_token is not null)
+  execute function public.invite_ticket_email_trg();
+
+-- ---------------------------------------------------------------- organiser: events
+
+create or replace function public.invite_list_cities()
+returns table (id uuid, name text, name_ar text)
 language sql
 stable
 security definer
 set search_path to ''
 as $$
-  select e.id,
-         coalesce(et.title, e.slug),
-         e.starts_at,
-         e.venue,
-         e.capacity,
-         count(t.id) filter (where t.guest_name is not null and t.status <> 'cancelled'),
-         count(t.id) filter (where t.guest_name is not null and t.status = 'redeemed')
-  from public.events e
-  left join public.event_translations et on et.event_id = e.id and et.locale = 'en'
-  left join public.tickets t on t.event_id = e.id
-  where public.invite_staff_role() is not null
-    and e.status = 'Draft'
-    and e.booking_mode = 'ticket'
-    and coalesce(e.price_from, 0) = 0
-  group by e.id, et.title
-  order by e.created_at desc;
+  select c.id, coalesce(c.name_en, c.slug), c.name_ar
+  from public.cities c
+  where public.invite_staff_role() = 'admin'
+    and c.region_id is not null
+  order by c.is_sharqia_core desc, coalesce(c.name_en, c.slug);
 $$;
 
--- ---------------------------------------------------------------- admin: guest tickets
+-- This site's events with guest counts. Organisers and scanners.
+create or replace function public.invite_list_events()
+returns table (
+  id                uuid,
+  slug              text,
+  name              text,
+  name_ar           text,
+  description       text,
+  description_ar    text,
+  starts_at         timestamptz,
+  ends_at           timestamptz,
+  venue             text,
+  city_id           uuid,
+  capacity          integer,
+  image_url         text,
+  registration_open boolean,
+  invited           bigint,
+  checked_in        bigint
+)
+language sql
+stable
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+  select e.id, e.slug,
+         coalesce(en.title, e.slug), ar.title,
+         nullif(en.description, ''), nullif(ar.description, ''),
+         e.starts_at, e.ends_at, e.venue, e.city_id, e.capacity,
+         nullif(e.image_url, ''), e.invite_registration_open,
+         (select count(*) from public.tickets t where t.event_id = e.id and t.status <> 'cancelled'),
+         (select count(*) from public.tickets t where t.event_id = e.id and t.status = 'redeemed')
+  from public.events e
+  left join public.event_translations en on en.event_id = e.id and en.locale = 'en'
+  left join public.event_translations ar on ar.event_id = e.id and ar.locale = 'ar'
+  where public.invite_staff_role() is not null
+    and e.invite_managed
+  order by e.starts_at desc nulls last, e.created_at desc;
+$$;
+
+-- Creates (p_event_id null) or edits an event. Returns its id.
+-- p_event: {name, name_ar, description, description_ar, starts_at, ends_at,
+--           venue, city_id, capacity, image_url, registration_open}
+create or replace function public.invite_save_event(p_event_id uuid, p_event jsonb)
+returns uuid
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+declare
+  v_id       uuid := p_event_id;
+  v_name     text := left(trim(coalesce(p_event->>'name', '')), 200);
+  v_name_ar  text := nullif(left(trim(coalesce(p_event->>'name_ar', '')), 200), '');
+  v_desc     text := left(trim(coalesce(p_event->>'description', '')), 5000);
+  v_desc_ar  text := left(trim(coalesce(p_event->>'description_ar', '')), 5000);
+  v_venue    text := nullif(left(trim(coalesce(p_event->>'venue', '')), 200), '');
+  v_image    text := left(trim(coalesce(p_event->>'image_url', '')), 1000);
+  v_cap_txt  text := trim(coalesce(p_event->>'capacity', ''));
+  v_open     boolean := coalesce((p_event->>'registration_open')::boolean, false);
+  v_city     uuid;
+  v_starts   timestamptz;
+  v_ends     timestamptz;
+  v_capacity integer;
+  v_live     integer;
+begin
+  perform public.invite_require_manager();
+
+  if v_name = '' then raise exception 'name_required'; end if;
+  if nullif(p_event->>'city_id', '') is null then raise exception 'city_required'; end if;
+  v_city := (p_event->>'city_id')::uuid;
+  if not exists (select 1 from public.cities c where c.id = v_city and c.region_id is not null) then
+    raise exception 'city_required';
+  end if;
+  v_starts := nullif(p_event->>'starts_at', '')::timestamptz;
+  v_ends   := nullif(p_event->>'ends_at', '')::timestamptz;
+  if v_starts is null then raise exception 'start_required'; end if;
+  if v_ends < v_starts then raise exception 'ends_before_start'; end if;
+  if v_cap_txt <> '' then
+    if v_cap_txt !~ '^\d{1,6}$' then raise exception 'bad_capacity'; end if;
+    v_capacity := v_cap_txt::integer;
+  end if;
+  if v_image <> '' and v_image !~ '^https://[^\s"<>]+$' then raise exception 'bad_image_url'; end if;
+
+  if v_id is null then
+    insert into public.events
+      (city_id, starts_at, ends_at, venue, image_url, capacity, booking_mode, is_free,
+       price_from, status, show_in_view_all, is_home_featured,
+       invite_managed, invite_registration_open)
+    values
+      (v_city, v_starts, v_ends, v_venue, v_image, v_capacity, 'ticket', true,
+       0, 'Draft', false, false, true, v_open)
+    returning id into v_id;
+  else
+    perform 1 from public.events where id = v_id and invite_managed for update;
+    if not found then raise exception 'event_not_found'; end if;
+    select count(*) into v_live from public.tickets where event_id = v_id and status <> 'cancelled';
+    if v_capacity < v_live then raise exception 'capacity_below_guests'; end if;
+    update public.events
+       set city_id = v_city, starts_at = v_starts, ends_at = v_ends, venue = v_venue,
+           image_url = v_image, capacity = v_capacity, invite_registration_open = v_open
+     where id = v_id;
+    -- Keep the ticket titles (shown in visit's dashboard) in step with the name.
+    update public.tickets set title = v_name
+     where event_id = v_id and guest_name is not null and title is distinct from v_name;
+  end if;
+
+  insert into public.event_translations (event_id, locale, title, summary, description)
+  values (v_id, 'en', v_name, left(v_desc, 200), v_desc)
+  on conflict (event_id, locale) do update
+    set title = excluded.title, summary = excluded.summary, description = excluded.description;
+
+  if v_name_ar is null then
+    delete from public.event_translations where event_id = v_id and locale = 'ar';
+  else
+    insert into public.event_translations (event_id, locale, title, summary, description)
+    values (v_id, 'ar', v_name_ar, left(v_desc_ar, 200), v_desc_ar)
+    on conflict (event_id, locale) do update
+      set title = excluded.title, summary = excluded.summary, description = excluded.description;
+  end if;
+
+  return v_id;
+end;
+$$;
+
+-- Only events without any tickets can be deleted (tickets keep the event).
+create or replace function public.invite_delete_event(p_event_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+begin
+  perform public.invite_require_manager();
+  perform 1 from public.events where id = p_event_id and invite_managed for update;
+  if not found then raise exception 'event_not_found'; end if;
+  if exists (select 1 from public.tickets where event_id = p_event_id) then
+    raise exception 'event_has_guests';
+  end if;
+  delete from public.events where id = p_event_id;
+end;
+$$;
+
+-- ---------------------------------------------------------------- organiser: guests
 
 create or replace function public.invite_list_tickets(p_event_id uuid)
 returns table (
@@ -120,23 +360,93 @@ language plpgsql
 stable
 security definer
 set search_path to ''
+set row_security to 'off'
 as $$
 begin
-  if not public.is_admin() then
-    raise exception 'not_admin' using errcode = '42501';
-  end if;
+  perform public.invite_require_manager();
   return query
   select t.id, t.guest_name, t.guest_phone, t.guest_email, t.guest_note, t.link_token,
          t.status, t.redeemed_at, t.created_at
   from public.tickets t
+  join public.events e on e.id = t.event_id and e.invite_managed
   where t.event_id = p_event_id and t.guest_name is not null
   order by t.created_at desc;
 end;
 $$;
 
+-- Internal (no grants): adds guests to an invite event the caller has locked.
+-- Checks capacity, email format and duplicates. Returns the new link tokens.
+-- The tickets_invite_email trigger emails every new guest that has an email.
+create or replace function public.invite_insert_guests(p_event_id uuid, p_guests jsonb)
+returns setof text
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+declare
+  v_title    text;
+  v_capacity integer;
+  v_live     integer;
+  v_count    integer;
+begin
+  if jsonb_typeof(p_guests) <> 'array' or jsonb_array_length(p_guests) = 0 then
+    raise exception 'no_guests';
+  end if;
+  if jsonb_array_length(p_guests) > 2000 then raise exception 'too_many_guests'; end if;
+
+  select coalesce(en.title, e.slug), e.capacity into v_title, v_capacity
+  from public.events e
+  left join public.event_translations en on en.event_id = e.id and en.locale = 'en'
+  where e.id = p_event_id and e.invite_managed;
+  if v_title is null then raise exception 'event_not_found'; end if;
+
+  create temp table if not exists pg_temp.invite_new_guests
+    (name text, phone text, email text, note text) on commit drop;
+  truncate pg_temp.invite_new_guests;
+  insert into pg_temp.invite_new_guests
+  select left(trim(g->>'name'), 120),
+         nullif(left(trim(coalesce(g->>'phone', '')), 40), ''),
+         nullif(lower(trim(coalesce(g->>'email', ''))), ''),
+         nullif(left(trim(coalesce(g->>'note', '')), 300), '')
+  from jsonb_array_elements(p_guests) g
+  where length(trim(coalesce(g->>'name', ''))) > 0;
+
+  select count(*) into v_count from pg_temp.invite_new_guests;
+  if v_count = 0 then raise exception 'no_guests'; end if;
+
+  if exists (select 1 from pg_temp.invite_new_guests
+             where email is not null
+               and (length(email) > 200 or email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$')) then
+    raise exception 'bad_email';
+  end if;
+  if exists (select 1 from pg_temp.invite_new_guests where email is not null
+             group by email having count(*) > 1)
+     or exists (select 1 from pg_temp.invite_new_guests n
+                join public.tickets t on t.event_id = p_event_id and lower(t.guest_email) = n.email
+                                     and t.status <> 'cancelled') then
+    raise exception 'email_already_invited';
+  end if;
+
+  if v_capacity is not null then
+    select count(*) into v_live from public.tickets
+    where event_id = p_event_id and status <> 'cancelled';
+    if v_live + v_count > v_capacity then raise exception 'event_sold_out'; end if;
+  end if;
+
+  -- email_sent_at is set so visit's own send_ticket_email webhook skips guest
+  -- tickets (it has no user to send to); this site sends its own email instead.
+  return query
+  insert into public.tickets
+    (user_id, event_id, title, guest_name, guest_phone, guest_email, guest_note, link_token, email_sent_at)
+  select null::uuid, p_event_id, v_title, n.name, n.phone, n.email, n.note,
+         encode(extensions.gen_random_bytes(24), 'hex'), now()
+  from pg_temp.invite_new_guests n
+  returning link_token;
+end;
+$$;
+
 -- p_guests: [{"name": "...", "phone": "...", "email": "...", "note": "..."}, ...]
--- Same event rules as create_ticket_for_event (ticket mode, free, capacity), with the
--- ticket owned by a named guest instead of the caller.
 create or replace function public.invite_create_tickets(p_event_id uuid, p_guests jsonb)
 returns integer
 language plpgsql
@@ -145,59 +455,12 @@ set search_path to ''
 set row_security to 'off'
 as $$
 declare
-  v_title    text;
-  v_mode     text;
-  v_status   text;
-  v_price    numeric;
-  v_capacity integer;
-  v_sold     integer;
-  v_count    integer;
+  v_count integer;
 begin
-  if not public.is_admin() then
-    raise exception 'not_admin' using errcode = '42501';
-  end if;
-  if jsonb_typeof(p_guests) <> 'array' or jsonb_array_length(p_guests) = 0 then
-    raise exception 'no_guests';
-  end if;
-  if jsonb_array_length(p_guests) > 2000 then
-    raise exception 'too_many_guests';
-  end if;
-
-  perform 1 from public.events where id = p_event_id for update;
-
-  select e.booking_mode, e.status, e.price_from, e.capacity, coalesce(et.title, e.slug)
-    into v_mode, v_status, v_price, v_capacity, v_title
-  from public.events e
-  left join public.event_translations et on et.event_id = e.id and et.locale = 'en'
-  where e.id = p_event_id;
-
-  if v_title is null then raise exception 'event_not_found'; end if;
-  if v_mode <> 'ticket' then raise exception 'event_not_ticketed'; end if;
-  if coalesce(v_price, 0) > 0 then raise exception 'event_requires_payment'; end if;
-  if v_status <> 'Draft' then raise exception 'event_not_draft'; end if;
-
-  select count(*) into v_count
-  from jsonb_array_elements(p_guests) g
-  where length(trim(coalesce(g->>'name', ''))) > 0;
-
-  if v_capacity is not null then
-    select count(*) into v_sold
-    from public.tickets
-    where event_id = p_event_id and status <> 'cancelled';
-    if v_sold + v_count > v_capacity then raise exception 'event_sold_out'; end if;
-  end if;
-
-  insert into public.tickets
-    (user_id, event_id, title, guest_name, guest_phone, guest_email, guest_note, link_token)
-  select null, p_event_id, v_title,
-         trim(g->>'name'),
-         nullif(trim(g->>'phone'), ''),
-         nullif(trim(g->>'email'), ''),
-         nullif(trim(g->>'note'), ''),
-         encode(extensions.gen_random_bytes(24), 'hex')
-  from jsonb_array_elements(p_guests) g
-  where length(trim(coalesce(g->>'name', ''))) > 0;
-
+  perform public.invite_require_manager();
+  perform 1 from public.events where id = p_event_id and invite_managed for update;
+  if not found then raise exception 'event_not_found'; end if;
+  select count(*) into v_count from public.invite_insert_guests(p_event_id, p_guests);
   return v_count;
 end;
 $$;
@@ -210,16 +473,17 @@ set search_path to ''
 set row_security to 'off'
 as $$
 begin
-  if not public.is_admin() then
-    raise exception 'not_admin' using errcode = '42501';
-  end if;
-  update public.tickets set status = 'cancelled'
-  where id = p_ticket_id and guest_name is not null and status = 'active';
+  perform public.invite_require_manager();
+  update public.tickets t set status = 'cancelled'
+  from public.events e
+  where t.id = p_ticket_id and e.id = t.event_id and e.invite_managed
+    and t.guest_name is not null and t.status = 'active';
   if not found then raise exception 'ticket_not_active'; end if;
 end;
 $$;
 
--- For a link sent to the wrong person: the old link and the old QR stop working.
+-- For a link sent to the wrong person: the old link and the old QR stop working,
+-- and the guest is emailed the new link.
 create or replace function public.invite_regenerate_link(p_ticket_id uuid)
 returns void
 language plpgsql
@@ -228,14 +492,150 @@ set search_path to ''
 set row_security to 'off'
 as $$
 begin
-  if not public.is_admin() then
-    raise exception 'not_admin' using errcode = '42501';
-  end if;
-  update public.tickets
+  perform public.invite_require_manager();
+  update public.tickets t
      set link_token = encode(extensions.gen_random_bytes(24), 'hex'),
          qr_token   = encode(extensions.gen_random_bytes(32), 'hex')
-   where id = p_ticket_id and guest_name is not null and status = 'active';
+  from public.events e
+  where t.id = p_ticket_id and e.id = t.event_id and e.invite_managed
+    and t.guest_name is not null and t.status = 'active';
   if not found then raise exception 'ticket_not_active'; end if;
+  perform public.invite_queue_email(p_ticket_id);
+end;
+$$;
+
+create or replace function public.invite_resend_email(p_ticket_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+begin
+  perform public.invite_require_manager();
+  if not exists (
+    select 1 from public.tickets t
+    join public.events e on e.id = t.event_id and e.invite_managed
+    where t.id = p_ticket_id and t.status = 'active'
+  ) then
+    raise exception 'ticket_not_active';
+  end if;
+  if not exists (select 1 from public.tickets where id = p_ticket_id and guest_email is not null) then
+    raise exception 'no_email';
+  end if;
+  perform public.invite_queue_email(p_ticket_id);
+end;
+$$;
+
+-- ---------------------------------------------------------------- public: event page
+
+create or replace function public.invite_get_event(p_slug text)
+returns table (
+  slug              text,
+  name              text,
+  name_ar           text,
+  description       text,
+  description_ar    text,
+  starts_at         timestamptz,
+  ends_at           timestamptz,
+  venue             text,
+  city              text,
+  city_ar           text,
+  image_url         text,
+  registration_open boolean,
+  spots_left        integer
+)
+language sql
+stable
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+  select e.slug,
+         coalesce(en.title, e.slug), ar.title,
+         nullif(en.description, ''), nullif(ar.description, ''),
+         e.starts_at, e.ends_at, e.venue,
+         coalesce(c.name_en, c.slug), c.name_ar,
+         nullif(e.image_url, ''),
+         e.invite_registration_open and coalesce(e.ends_at, e.starts_at) > now(),
+         case when e.capacity is null then null
+              else greatest(e.capacity - (select count(*) from public.tickets t
+                                          where t.event_id = e.id and t.status <> 'cancelled'), 0)::integer
+         end
+  from public.events e
+  left join public.event_translations en on en.event_id = e.id and en.locale = 'en'
+  left join public.event_translations ar on ar.event_id = e.id and ar.locale = 'ar'
+  left join public.cities c on c.id = e.city_id
+  where e.slug = p_slug and e.invite_managed;
+$$;
+
+-- Public sign-up. Returns the new ticket's link token, so the page can open the
+-- ticket straight away, or 'already_registered' when that email already has a
+-- ticket. p_website is a hidden field people never fill (bots do).
+create or replace function public.invite_register(
+  p_slug    text,
+  p_name    text,
+  p_email   text,
+  p_phone   text default null,
+  p_website text default null
+)
+returns text
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+declare
+  v_name     text := left(trim(coalesce(p_name, '')), 120);
+  v_email    text := lower(trim(coalesce(p_email, '')));
+  v_ip       text;
+  v_event    public.events;
+  v_existing uuid;
+  v_token    text;
+begin
+  if coalesce(p_website, '') <> '' then raise exception 'registration_closed'; end if;
+  if v_name = '' then raise exception 'name_required'; end if;
+  if length(v_email) > 200 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
+    raise exception 'bad_email';
+  end if;
+
+  -- Per-IP limit, generous because a whole office can share one IP.
+  begin
+    v_ip := trim(split_part(
+      nullif(current_setting('request.headers', true), '')::json->>'x-forwarded-for', ',', 1));
+  exception when others then
+    v_ip := null;
+  end;
+  if coalesce(v_ip, '') <> ''
+     and not public.check_and_bump_rate_limit('invite-register:' || v_ip, 60, 600) then
+    raise exception 'too_many_attempts';
+  end if;
+
+  select * into v_event from public.events e
+  where e.slug = p_slug and e.invite_managed
+  for update;
+  if v_event.id is null then raise exception 'event_not_found'; end if;
+  if not v_event.invite_registration_open
+     or coalesce(v_event.ends_at, v_event.starts_at) <= now() then
+    raise exception 'registration_closed';
+  end if;
+
+  select t.id into v_existing from public.tickets t
+  where t.event_id = v_event.id and lower(t.guest_email) = v_email and t.status <> 'cancelled';
+  if v_existing is not null then
+    -- Send the ticket to that inbox again (never show it here: anyone can type
+    -- anyone's email). Limited so the form can't be used to flood an inbox.
+    -- Returned, not raised: raising would roll back the queued email.
+    if public.check_and_bump_rate_limit('invite-resend:' || v_existing::text, 3, 3600) then
+      perform public.invite_queue_email(v_existing);
+    end if;
+    return 'already_registered';
+  end if;
+
+  select tok into v_token
+  from public.invite_insert_guests(v_event.id,
+         jsonb_build_array(jsonb_build_object('name', v_name, 'email', v_email, 'phone', p_phone))) tok;
+  return v_token;
 end;
 $$;
 
@@ -271,7 +671,7 @@ as $$
          e.starts_at,
          e.ends_at
   from public.tickets t
-  join public.events e on e.id = t.event_id
+  join public.events e on e.id = t.event_id and e.invite_managed
   left join public.event_translations en on en.event_id = e.id and en.locale = 'en'
   left join public.event_translations ar on ar.event_id = e.id and ar.locale = 'ar'
   where t.link_token = p_link_token
@@ -280,9 +680,8 @@ $$;
 
 -- ---------------------------------------------------------------- scanner
 
--- Same outcome codes as scan_ticket_qr and logs to the same ticket_scans table,
--- but checks the staff role on the server and returns the guest's name.
--- (scan_ticket_qr and the visit dashboard's /admin/scan also work on these tickets.)
+-- Same outcome codes as scan_ticket_qr and logs to the same ticket_scans table.
+-- Only tickets of this site's events are accepted; visit app tickets are invalid here.
 create or replace function public.invite_scan_ticket(p_qr_token text, p_event_id uuid default null)
 returns table (
   status      text,
@@ -311,7 +710,11 @@ begin
     raise exception 'not_scanner' using errcode = '42501';
   end if;
 
-  select * into v_ticket from public.tickets t where t.qr_token = trim(p_qr_token) for update;
+  select t.* into v_ticket
+  from public.tickets t
+  join public.events e on e.id = t.event_id and e.invite_managed
+  where t.qr_token = trim(p_qr_token)
+  for update of t;
 
   if v_ticket.id is null then
     return query select 'invalid_ticket'::text, null::uuid, null::text, null::text, null::timestamptz, v_now;
@@ -342,22 +745,63 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------- cover images
+
+-- Organisers upload covers to the public 'events' bucket, only under invite/<own id>/.
+-- (The bucket itself limits files to 10 MB of jpeg/png/webp.)
+drop policy if exists "invite covers insert" on storage.objects;
+create policy "invite covers insert" on storage.objects for insert to authenticated
+  with check (bucket_id = 'events'
+              and (storage.foldername(name))[1] = 'invite'
+              and (storage.foldername(name))[2] = (select auth.uid())::text
+              and (select public.invite_staff_role()) = 'admin');
+
+drop policy if exists "invite covers update" on storage.objects;
+create policy "invite covers update" on storage.objects for update to authenticated
+  using (bucket_id = 'events'
+         and (storage.foldername(name))[1] = 'invite'
+         and (storage.foldername(name))[2] = (select auth.uid())::text
+         and (select public.invite_staff_role()) = 'admin');
+
+drop policy if exists "invite covers delete" on storage.objects;
+create policy "invite covers delete" on storage.objects for delete to authenticated
+  using (bucket_id = 'events'
+         and (storage.foldername(name))[1] = 'invite'
+         and (storage.foldername(name))[2] = (select auth.uid())::text
+         and (select public.invite_staff_role()) = 'admin');
+
 -- ---------------------------------------------------------------- grants
 
-revoke all on function public.invite_staff_role()                   from public, anon;
-revoke all on function public.invite_list_events()                  from public, anon;
-revoke all on function public.invite_list_tickets(uuid)             from public, anon;
-revoke all on function public.invite_create_tickets(uuid, jsonb)    from public, anon;
-revoke all on function public.invite_cancel_ticket(uuid)            from public, anon;
-revoke all on function public.invite_regenerate_link(uuid)          from public, anon;
-revoke all on function public.invite_get_ticket(text)               from public;
-revoke all on function public.invite_scan_ticket(text, uuid)        from public, anon;
+revoke all on function public.invite_staff_role()                          from public, anon;
+revoke all on function public.invite_require_manager()                     from public, anon, authenticated;
+revoke all on function public.invite_queue_email(uuid)                     from public, anon, authenticated;
+revoke all on function public.invite_ticket_email_trg()                    from public, anon, authenticated;
+revoke all on function public.invite_insert_guests(uuid, jsonb)            from public, anon, authenticated;
+revoke all on function public.invite_list_cities()                         from public, anon;
+revoke all on function public.invite_list_events()                         from public, anon;
+revoke all on function public.invite_save_event(uuid, jsonb)               from public, anon;
+revoke all on function public.invite_delete_event(uuid)                    from public, anon;
+revoke all on function public.invite_list_tickets(uuid)                    from public, anon;
+revoke all on function public.invite_create_tickets(uuid, jsonb)           from public, anon;
+revoke all on function public.invite_cancel_ticket(uuid)                   from public, anon;
+revoke all on function public.invite_regenerate_link(uuid)                 from public, anon;
+revoke all on function public.invite_resend_email(uuid)                    from public, anon;
+revoke all on function public.invite_get_event(text)                       from public;
+revoke all on function public.invite_register(text, text, text, text, text) from public;
+revoke all on function public.invite_get_ticket(text)                      from public;
+revoke all on function public.invite_scan_ticket(text, uuid)               from public, anon;
 
-grant execute on function public.invite_staff_role()                to authenticated;
-grant execute on function public.invite_list_events()               to authenticated;
-grant execute on function public.invite_list_tickets(uuid)          to authenticated;
-grant execute on function public.invite_create_tickets(uuid, jsonb) to authenticated;
-grant execute on function public.invite_cancel_ticket(uuid)         to authenticated;
-grant execute on function public.invite_regenerate_link(uuid)       to authenticated;
-grant execute on function public.invite_get_ticket(text)            to anon, authenticated;
-grant execute on function public.invite_scan_ticket(text, uuid)     to authenticated;
+grant execute on function public.invite_staff_role()                          to authenticated;
+grant execute on function public.invite_list_cities()                         to authenticated;
+grant execute on function public.invite_list_events()                         to authenticated;
+grant execute on function public.invite_save_event(uuid, jsonb)               to authenticated;
+grant execute on function public.invite_delete_event(uuid)                    to authenticated;
+grant execute on function public.invite_list_tickets(uuid)                    to authenticated;
+grant execute on function public.invite_create_tickets(uuid, jsonb)           to authenticated;
+grant execute on function public.invite_cancel_ticket(uuid)                   to authenticated;
+grant execute on function public.invite_regenerate_link(uuid)                 to authenticated;
+grant execute on function public.invite_resend_email(uuid)                    to authenticated;
+grant execute on function public.invite_get_event(text)                       to anon, authenticated;
+grant execute on function public.invite_register(text, text, text, text, text) to anon, authenticated;
+grant execute on function public.invite_get_ticket(text)                      to anon, authenticated;
+grant execute on function public.invite_scan_ticket(text, uuid)               to authenticated;

@@ -4,20 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
-  <title>Guest Tickets Admin</title>
+  <title>Event Organiser</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&display=swap">
   <link rel="stylesheet" href="/styles.css">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <script src="/config.js"></script>
+  <script src="/demo.js"></script>
   <script src="/lib.js"></script>
 </head>
 <body>
-<header class="brandbar"><div class="inner"><img src="/brand/jesco.png" alt="JESCO"><img class="am" src="/brand/arcelormittal.png" alt="ArcelorMittal Tubular Products Al-Jubail"><span class="title">Safety Event · Guests</span></div></header>
+<header class="brandbar"><div class="inner"><img src="/brand/jesco.png" alt="JESCO"><img class="am" src="/brand/arcelormittal.png" alt="ArcelorMittal Tubular Products Al-Jubail"><span class="title">Event Organiser</span></div></header>
 <main>
   <form id="login" class="card login" hidden>
-    <h1>Admin sign in</h1>
+    <h1>Organiser sign in</h1>
     <div class="field"><label>Email</label><input name="email" type="email" required autocomplete="username"></div>
     <div class="field"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div>
     <button class="primary" style="width:100%">Sign in</button>
@@ -25,40 +26,110 @@
   </form>
 
   <div id="app" hidden>
-    <div class="row" style="margin-bottom:16px">
-      <h1 style="margin:0">Guest tickets</h1>
-      <span class="spacer"></span>
-      <a class="btn small" href="/scan">Scanner</a>
-      <button class="small" id="signout">Sign out</button>
-    </div>
-
-    <div class="card">
-      <div class="row">
-        <div class="field" style="margin:0"><label>Event</label><select id="event"></select></div>
+    <!-- all events -->
+    <section id="listView">
+      <div class="row" style="margin-bottom:16px">
+        <h1 style="margin:0">Events</h1>
+        <span class="spacer"></span>
+        <a class="btn small" href="/scan">Scanner</a>
+        <button class="small" id="signout">Sign out</button>
+        <button class="primary" id="newBtn">+ New event</button>
       </div>
-      <p class="muted" style="margin:10px 0 0; font-size:.88rem">Events come from the visit admin dashboard:
-        create the event there with status <b>Draft</b>, booking mode <b>Ticket</b> and no price.
-        Draft events never appear in the visit app.</p>
-    </div>
+      <div id="eventGrid" class="event-grid"></div>
+    </section>
 
-    <div id="eventArea" hidden>
+    <!-- create / edit -->
+    <section id="editView" hidden>
+      <button class="link-btn" data-back>← Events</button>
+      <form id="eventForm" class="editor">
+        <div>
+          <label class="cover-drop" id="coverDrop">
+            <img id="coverImg" alt="" hidden>
+            <span id="coverHint">＋ Add cover image<br><small>JPG, PNG or WebP · up to 10 MB</small></span>
+            <input type="file" id="coverFile" accept="image/jpeg,image/png,image/webp" hidden>
+          </label>
+          <button type="button" class="small" id="coverRemove" hidden style="margin-top:8px">Remove image</button>
+        </div>
+        <div>
+          <input name="name" class="title-input" placeholder="Event name" required maxlength="120">
+          <input name="name_ar" class="title-input ar" dir="rtl" placeholder="اسم الفعالية" maxlength="120">
+
+          <div class="editor-box">
+            <div class="row">
+              <div class="field"><label>Starts</label><input name="starts_at" type="datetime-local" required></div>
+              <div class="field"><label>Ends</label><input name="ends_at" type="datetime-local"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label>Venue</label><input name="venue" placeholder="e.g. JESCO Main Hall" maxlength="160"></div>
+              <div class="field"><label>City</label><select name="city_id" id="citySel" required></select></div>
+            </div>
+          </div>
+
+          <div class="editor-box">
+            <div class="field"><label>Description</label><textarea name="description" rows="4" placeholder="What is this event about?"></textarea></div>
+            <div class="field"><label>الوصف</label><textarea name="description_ar" rows="3" dir="rtl"></textarea></div>
+          </div>
+
+          <div class="editor-box">
+            <h2>Event options</h2>
+            <div class="option-row">
+              <div><b>Capacity</b><br><small class="muted">Leave empty for unlimited</small></div>
+              <input name="capacity" type="number" min="0" placeholder="Unlimited" style="width:130px">
+            </div>
+            <div class="option-row">
+              <div><b>Public registration</b><br><small class="muted">Anyone with the event link can sign up</small></div>
+              <label class="switch"><input type="checkbox" name="registration_open"><span></span></label>
+            </div>
+          </div>
+
+          <div class="row">
+            <button class="primary" id="saveBtn">Create event</button>
+            <span class="error" id="saveError"></span>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <!-- one event: link, stats, guests -->
+    <section id="eventView" hidden>
+      <button class="link-btn" data-back>← Events</button>
+      <div class="card event-head">
+        <img id="evCover" alt="">
+        <div style="flex:1; min-width:220px">
+          <h1 id="evName" style="margin-bottom:4px"></h1>
+          <div class="muted" id="evWhen"></div>
+          <div class="muted" id="evWhere"></div>
+          <div class="share-box">
+            <span id="evRegState" class="pill"></span>
+            <input id="evLink" readonly>
+            <button class="small" id="copyEventLink">Copy</button>
+            <a class="btn small" id="openEventLink" target="_blank" rel="noopener">Open</a>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button class="small" id="editBtn">Edit event</button>
+            <button class="small danger" id="deleteBtn">Delete</button>
+          </div>
+        </div>
+      </div>
+
       <div class="stats">
-        <div class="stat"><span class="muted">Invited</span><b id="sTotal">0</b></div>
+        <div class="stat"><span class="muted">Going</span><b id="sTotal">0</b></div>
         <div class="stat"><span class="muted">Checked in</span><b id="sIn">0</b></div>
-        <div class="stat"><span class="muted">Not yet</span><b id="sOut">0</b></div>
+        <div class="stat"><span class="muted">Places left</span><b id="sLeft">0</b></div>
         <div class="stat"><span class="muted">Cancelled</span><b id="sCancel">0</b></div>
       </div>
 
       <div class="card">
         <h2>Add a guest</h2>
+        <p class="muted" style="margin-top:-6px; font-size:.88rem">Guests with an email get their ticket by email automatically.</p>
         <form id="addGuest">
           <div class="row">
             <div class="field"><label>Name *</label><input name="name" required></div>
-            <div class="field"><label>Phone</label><input name="phone" placeholder="05xxxxxxxx"></div>
             <div class="field"><label>Email</label><input name="email" type="email"></div>
+            <div class="field"><label>Phone</label><input name="phone" placeholder="05xxxxxxxx"></div>
             <div class="field"><label>Note (shown to scanner)</label><input name="note" placeholder="e.g. VIP"></div>
           </div>
-          <button class="primary">Create ticket</button>
+          <button class="primary">Add guest</button>
           <span class="error" id="addError"></span>
         </form>
         <details style="margin-top:16px">
@@ -69,7 +140,7 @@
           <div class="row" style="margin-top:8px">
             <input type="file" id="csvFile" accept=".csv,.txt" style="width:auto">
             <span class="spacer"></span>
-            <button class="primary" id="bulkBtn">Create tickets</button>
+            <button class="primary" id="bulkBtn">Add guests</button>
           </div>
           <p class="error" id="bulkError"></p>
         </details>
@@ -90,35 +161,145 @@
           </table>
         </div>
       </div>
-    </div>
+    </section>
   </div>
 </main>
 <script>
 (function () {
-  const { db, $, esc, fmtDate, ticketUrl, setupLogin, signOut } = T;
-  let events = [], tickets = [];
+  const { db, $, esc, fmtDate, ticketUrl, eventUrl, toLocalInput, fromLocalInput, errText, setupLogin, signOut } = T;
+  let events = [], cities = [], tickets = [], current = null, editing = null, coverUrl = '';
 
-  const eventId = () => $('#event').value;
+  function show(view) {
+    for (const id of ['listView', 'editView', 'eventView']) $('#' + id).hidden = id !== view;
+    window.scrollTo(0, 0);
+  }
+
+  // ---------------------------------------------------------------- events list
 
   async function loadEvents() {
     const { data, error } = await db.rpc('invite_list_events');
-    if (error) { alert(error.message); return; }
+    if (error) { $('#eventGrid').innerHTML = `<p class="error">${esc(errText(error))}</p>`; return; }
     events = data;
-    $('#event').innerHTML = events.length
-      ? events.map((e) => `<option value="${e.id}">${esc(e.name)}${e.starts_at ? ' · ' + esc(fmtDate(e.starts_at)) : ''}</option>`).join('')
-      : '<option value="">No Draft free ticket events yet</option>';
-    loadTickets();
+    $('#eventGrid').innerHTML = events.map((e) => `
+      <button class="event-card" data-id="${e.id}">
+        <img src="${esc(e.image_url || '/brand/hero.webp')}" alt="">
+        <div class="event-card-body">
+          <div class="muted small-text">${esc(fmtDate(e.starts_at))}</div>
+          <b>${esc(e.name)}</b>
+          <div class="muted small-text">${e.invited} going${e.capacity != null ? ` of ${e.capacity}` : ''} · ${e.checked_in} checked in</div>
+          <span class="pill ${e.registration_open ? 'redeemed' : 'active'}">${e.registration_open ? 'Registration open' : 'Invite only'}</span>
+        </div>
+      </button>`).join('')
+      || '<div class="card muted" style="text-align:center">No events yet. Create your first one.</div>';
+  }
+
+  async function loadCities() {
+    if (cities.length) return;
+    const { data, error } = await db.rpc('invite_list_cities');
+    if (error) return;
+    cities = data;
+    $('#citySel').innerHTML = '<option value="">Choose…</option>' +
+      cities.map((c) => `<option value="${c.id}">${esc(c.name)}${c.name_ar ? ' · ' + esc(c.name_ar) : ''}</option>`).join('');
+  }
+
+  // ---------------------------------------------------------------- create / edit
+
+  function setCover(url) {
+    coverUrl = url || '';
+    $('#coverImg').src = coverUrl;
+    $('#coverImg').hidden = !coverUrl;
+    $('#coverHint').hidden = !!coverUrl;
+    $('#coverRemove').hidden = !coverUrl;
+  }
+
+  async function openEditor(ev) {
+    editing = ev || null;
+    await loadCities();
+    const f = $('#eventForm');
+    f.reset();
+    $('#saveError').textContent = '';
+    if (ev) {
+      f.name.value = ev.name || '';
+      f.name_ar.value = ev.name_ar || '';
+      f.starts_at.value = toLocalInput(ev.starts_at);
+      f.ends_at.value = toLocalInput(ev.ends_at);
+      f.venue.value = ev.venue || '';
+      f.city_id.value = ev.city_id || '';
+      f.description.value = ev.description || '';
+      f.description_ar.value = ev.description_ar || '';
+      f.capacity.value = ev.capacity ?? '';
+      f.registration_open.checked = !!ev.registration_open;
+    }
+    setCover(ev ? ev.image_url : '');
+    $('#saveBtn').textContent = ev ? 'Save changes' : 'Create event';
+    show('editView');
+  }
+
+  $('#coverFile').onchange = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { $('#saveError').textContent = 'Use a JPG, PNG or WebP image.'; return; }
+    if (file.size > 10 * 1024 * 1024) { $('#saveError').textContent = 'The image is larger than 10 MB.'; return; }
+    $('#coverHint').textContent = 'Uploading…';
+    const { data: { session } } = await db.auth.getSession();
+    const ext = file.type.split('/')[1].replace('jpeg', 'jpg');
+    const path = `invite/${session.user.id}/${Date.now()}.${ext}`;
+    const bucket = db.storage.from('events');
+    const { data, error } = await bucket.upload(path, file, { contentType: file.type, upsert: false });
+    $('#coverHint').innerHTML = '＋ Add cover image<br><small>JPG, PNG or WebP · up to 10 MB</small>';
+    if (error) { $('#saveError').textContent = 'Upload failed: ' + error.message; return; }
+    setCover(bucket.getPublicUrl(data.path).data.publicUrl);
+  };
+  $('#coverRemove').onclick = () => setCover('');
+
+  $('#eventForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    $('#saveError').textContent = '';
+    $('#saveBtn').disabled = true;
+    const { data, error } = await db.rpc('invite_save_event', {
+      p_event_id: editing ? editing.id : null,
+      p_event: {
+        name: f.name.value, name_ar: f.name_ar.value,
+        description: f.description.value, description_ar: f.description_ar.value,
+        starts_at: fromLocalInput(f.starts_at.value), ends_at: fromLocalInput(f.ends_at.value),
+        venue: f.venue.value, city_id: f.city_id.value, capacity: f.capacity.value,
+        image_url: coverUrl, registration_open: f.registration_open.checked,
+      },
+    });
+    $('#saveBtn').disabled = false;
+    if (error) { $('#saveError').textContent = errText(error); return; }
+    await loadEvents();
+    openEvent(data);
+  };
+
+  // ---------------------------------------------------------------- one event
+
+  async function openEvent(id) {
+    current = events.find((e) => e.id === id);
+    if (!current) { show('listView'); return; }
+    const c = current;
+    $('#evCover').src = c.image_url || '/brand/hero.webp';
+    $('#evName').textContent = c.name;
+    $('#evWhen').textContent = '🗓 ' + fmtDate(c.starts_at) + (c.ends_at ? ' – ' + fmtDate(c.ends_at) : '');
+    const city = cities.find((x) => x.id === c.city_id);
+    $('#evWhere').textContent = '📍 ' + [c.venue, city && city.name].filter(Boolean).join(', ');
+    $('#evRegState').textContent = c.registration_open ? 'Registration open' : 'Registration closed';
+    $('#evRegState').className = 'pill ' + (c.registration_open ? 'redeemed' : 'cancelled');
+    $('#evLink').value = eventUrl(c.slug);
+    $('#openEventLink').href = '/e/' + c.slug;
+    show('eventView');
+    await loadTickets();
   }
 
   async function loadTickets() {
-    $('#eventArea').hidden = !eventId();
-    if (!eventId()) return;
     // Supabase returns at most 1000 rows per request, so page through.
     let all = [], from = 0;
     for (;;) {
-      const { data, error } = await db.rpc('invite_list_tickets', { p_event_id: eventId() })
+      const { data, error } = await db.rpc('invite_list_tickets', { p_event_id: current.id })
         .range(from, from + 999);
-      if (error) { alert(error.message); return; }
+      if (error) { alert(errText(error)); return; }
       all = all.concat(data);
       if (data.length < 1000) break;
       from += 1000;
@@ -138,9 +319,10 @@
 
   function render() {
     const by = (s) => tickets.filter((t) => t.status === s).length;
-    $('#sTotal').textContent = tickets.length - by('cancelled');
+    const going = tickets.length - by('cancelled');
+    $('#sTotal').textContent = going;
     $('#sIn').textContent = by('redeemed');
-    $('#sOut').textContent = by('active');
+    $('#sLeft').textContent = current.capacity == null ? '∞' : Math.max(current.capacity - going, 0);
     $('#sCancel').textContent = by('cancelled');
 
     const q = $('#search').value.trim().toLowerCase();
@@ -154,26 +336,28 @@
       const statusText = t.status === 'redeemed' ? `checked in<br><small class="muted">${esc(fmtDate(t.redeemed_at))}</small>` : t.status;
       return `<tr data-id="${t.id}">
         <td><b>${esc(t.guest_name)}</b>${t.guest_note ? `<br><small class="muted">${esc(t.guest_note)}</small>` : ''}</td>
-        <td>${esc(t.guest_phone || '')}${t.guest_email ? `<br><small class="muted">${esc(t.guest_email)}</small>` : ''}</td>
+        <td>${esc(t.guest_email || '')}${t.guest_phone ? `<br><small class="muted">${esc(t.guest_phone)}</small>` : ''}</td>
         <td><span class="pill ${t.status}">${statusText}</span></td>
-        <td class="row">
+        <td><div class="row">
           ${t.status !== 'cancelled' ? `
+            ${t.guest_email ? '<button class="small" data-act="email">Resend email</button>' : ''}
             <button class="small" data-act="copy">Copy link</button>
-            <a class="btn small" target="_blank" rel="noopener" href="${waLink(t)}">WhatsApp</a>
+            ${t.guest_phone ? `<a class="btn small" target="_blank" rel="noopener" href="${waLink(t)}">WhatsApp</a>` : ''}
             <a class="btn small" target="_blank" rel="noopener" href="${ticketUrl(t.link_token)}">Open</a>` : ''}
-        </td>
-        <td class="row">
+        </div></td>
+        <td><div class="row">
           ${active ? `<button class="small" data-act="regen" title="Old link and QR stop working">New link</button>
                       <button class="small danger" data-act="cancel">Cancel</button>` : ''}
-        </td>
+        </div></td>
       </tr>`;
     }).join('') || `<tr><td colspan="5" class="muted">No guests yet.</td></tr>`;
   }
 
   async function createTickets(guests) {
-    const { data, error } = await db.rpc('invite_create_tickets', { p_event_id: eventId(), p_guests: guests });
-    if (error) throw error;
+    const { data, error } = await db.rpc('invite_create_tickets', { p_event_id: current.id, p_guests: guests });
+    if (error) throw new Error(errText(error));
     await loadTickets();
+    loadEvents();
     return data;
   }
 
@@ -198,12 +382,31 @@
     a.click();
   }
 
-  setupLogin({ form: $('#login'), app: $('#app'), allowed: ['admin'], onReady: () => loadEvents() });
+  // ---------------------------------------------------------------- wiring
+
+  setupLogin({ form: $('#login'), app: $('#app'), allowed: ['admin'], onReady: () => { loadEvents(); loadCities(); } });
   $('#signout').onclick = signOut;
-  $('#event').onchange = loadTickets;
+  $('#newBtn').onclick = () => openEditor(null);
+  $('#editBtn').onclick = () => openEditor(current);
+  document.querySelectorAll('[data-back]').forEach((b) => { b.onclick = () => { show('listView'); loadEvents(); }; });
+  $('#eventGrid').onclick = (e) => { const card = e.target.closest('.event-card'); if (card) openEvent(card.dataset.id); };
   $('#refreshBtn').onclick = loadTickets;
   $('#search').oninput = render;
   $('#exportBtn').onclick = exportCsv;
+
+  $('#copyEventLink').onclick = async () => {
+    await navigator.clipboard.writeText($('#evLink').value);
+    $('#copyEventLink').textContent = 'Copied ✓';
+    setTimeout(() => { $('#copyEventLink').textContent = 'Copy'; }, 1500);
+  };
+
+  $('#deleteBtn').onclick = async () => {
+    if (!confirm(`Delete "${current.name}"? This cannot be undone.`)) return;
+    const { error } = await db.rpc('invite_delete_event', { p_event_id: current.id });
+    if (error) { alert(errText(error)); return; }
+    show('listView');
+    loadEvents();
+  };
 
   $('#addGuest').onsubmit = async (e) => {
     e.preventDefault();
@@ -225,11 +428,12 @@
     const guests = parseList($('#bulk').value);
     $('#bulkError').textContent = '';
     if (!guests.length) { $('#bulkError').textContent = 'No guests found in the list.'; return; }
-    if (!confirm(`Create ${guests.length} tickets?`)) return;
+    const withEmail = guests.filter((g) => g.email).length;
+    if (!confirm(`Add ${guests.length} guests?${withEmail ? ` ${withEmail} of them will get their ticket by email.` : ''}`)) return;
     try {
       const n = await createTickets(guests);
       $('#bulk').value = '';
-      $('#bulkError').textContent = `Created ${n} tickets.`;
+      $('#bulkError').textContent = `Added ${n} guests.`;
     } catch (err) { $('#bulkError').textContent = err.message; }
   };
 
@@ -244,13 +448,18 @@
       setTimeout(() => { btn.textContent = 'Copy link'; }, 1500);
       return;
     }
+    if (act === 'email') {
+      const { error } = await db.rpc('invite_resend_email', { p_ticket_id: t.id });
+      btn.textContent = error ? 'Failed' : 'Sent ✓';
+      return;
+    }
     const ask = act === 'cancel'
       ? `Cancel ${t.guest_name}'s ticket? Their link and QR will stop working.`
-      : `Make a new link for ${t.guest_name}? The old link and QR stop working; send them the new one.`;
+      : `Make a new link for ${t.guest_name}? The old link and QR stop working${t.guest_email ? '; the new one is emailed to them' : ''}.`;
     if (!confirm(ask)) return;
     const fn = act === 'cancel' ? 'invite_cancel_ticket' : 'invite_regenerate_link';
     const { error } = await db.rpc(fn, { p_ticket_id: t.id });
-    if (error) alert(error.message);
+    if (error) alert(errText(error));
     loadTickets();
   };
 })();

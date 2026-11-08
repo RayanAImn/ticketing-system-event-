@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Event Registration</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="/config.js"></script>
+  <script src="/demo.js"></script>
+  <script src="/lib.js"></script>
+</head>
+<body class="event-page">
+<header class="brandbar"><div class="inner"><img src="/brand/jesco.png" alt="JESCO"><img class="am" src="/brand/arcelormittal.png" alt="ArcelorMittal Tubular Products Al-Jubail"><button class="lang-btn" id="langBtn">عربي</button></div></header>
+<main>
+  <div id="view" class="muted" style="text-align:center; padding:40px 0">Loading… · جارٍ التحميل…</div>
+</main>
+<script>
+(async function () {
+  const { db, $, esc } = T;
+  const slug = (location.pathname.match(/\/e\/([\w-]+)/) || [])[1] || new URLSearchParams(location.search).get('e');
+  let lang = 'en', ev = null;
+  try { if (localStorage.getItem('lang') === 'ar') lang = 'ar'; } catch { /* default */ }
+
+  const L = {
+    en: {
+      notFound: 'This event link is not valid.', loadFail: 'Could not load the event. Try again.',
+      register: 'Registration', welcome: 'Welcome! To join the event, please register below.',
+      name: 'Full name', email: 'Email', phone: 'Mobile number (optional)', submit: 'Register',
+      left: (n) => `${n} spots left`, full: 'This event is full.', closed: 'Registration is closed.',
+      about: 'About Event', ticketNote: 'Your ticket opens right away and is also sent to your email.',
+      errors: {
+        already_registered: 'You are already registered. We sent your ticket to your email again.',
+        event_sold_out: 'Sorry, this event just filled up.', registration_closed: 'Registration is closed.',
+        bad_email: 'Enter a valid email address.', name_required: 'Enter your name.',
+        too_many_attempts: 'Too many attempts. Please try again later.',
+      },
+      by: 'Hosted by JESCO & ArcelorMittal Tubular Products Al-Jubail',
+    },
+    ar: {
+      notFound: 'رابط الفعالية غير صالح.', loadFail: 'تعذّر تحميل الفعالية، حاول مرة أخرى.',
+      register: 'التسجيل', welcome: 'أهلاً بك! للانضمام إلى الفعالية، سجّل أدناه.',
+      name: 'الاسم الكامل', email: 'البريد الإلكتروني', phone: 'رقم الجوال (اختياري)', submit: 'سجّل الآن',
+      left: (n) => `المقاعد المتبقية: ${n}`, full: 'اكتمل العدد لهذه الفعالية.', closed: 'التسجيل مغلق.',
+      about: 'عن الفعالية', ticketNote: 'تظهر تذكرتك فوراً وتصلك أيضاً على بريدك الإلكتروني.',
+      errors: {
+        already_registered: 'أنت مسجّل مسبقاً، وأعدنا إرسال تذكرتك إلى بريدك.',
+        event_sold_out: 'عذراً، اكتمل العدد للتو.', registration_closed: 'التسجيل مغلق.',
+        bad_email: 'أدخل بريداً إلكترونياً صحيحاً.', name_required: 'أدخل اسمك.',
+        too_many_attempts: 'محاولات كثيرة، حاول لاحقاً.',
+      },
+      by: 'تنظيم JESCO و ArcelorMittal للأنابيب – الجبيل',
+    },
+  };
+
+  function when(iso, end) {
+    const loc = lang === 'ar' ? 'ar-SA-u-nu-latn-ca-gregory' : 'en-GB';
+    const d = new Date(iso);
+    const day = d.toLocaleDateString(loc, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const t = (x) => x.toLocaleTimeString(loc, { hour: 'numeric', minute: '2-digit' });
+    return { day, time: t(d) + (end ? ' – ' + t(new Date(end)) : ''),
+      mon: d.toLocaleDateString('en-GB', { month: 'short' }).toUpperCase(), num: d.getDate() };
+  }
+
+  function render() {
+    const s = L[lang];
+    document.documentElement.lang = lang;
+    document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+    $('#langBtn').textContent = lang === 'ar' ? 'English' : 'عربي';
+    const name = (lang === 'ar' && ev.name_ar) || ev.name;
+    const desc = (lang === 'ar' && ev.description_ar) || ev.description || '';
+    const city = (lang === 'ar' && ev.city_ar) || ev.city;
+    document.title = name;
+    const w = ev.starts_at ? when(ev.starts_at, ev.ends_at) : null;
+    const full = ev.spots_left === 0;
+
+    let reg;
+    if (!ev.registration_open) reg = `<p class="reg-closed">${s.closed}</p>`;
+    else if (full) reg = `<p class="reg-closed">${s.full}</p>`;
+    else reg = `
+      <p style="margin:0 0 12px">${s.welcome}</p>
+      ${ev.spots_left != null ? `<div class="spots">${s.left(ev.spots_left)}</div>` : ''}
+      <form id="regForm">
+        <div class="field"><label>${s.name}</label><input name="name" required maxlength="120" autocomplete="name"></div>
+        <div class="field"><label>${s.email}</label><input name="email" type="email" required maxlength="200" autocomplete="email" dir="ltr"></div>
+        <div class="field"><label>${s.phone}</label><input name="phone" type="tel" maxlength="40" autocomplete="tel" dir="ltr" placeholder="05xxxxxxxx"></div>
+        <input name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+        <button class="primary big" style="width:100%">${s.submit}</button>
+        <p class="error" id="regError"></p>
+        <p class="muted small-text" style="margin:0">${s.ticketNote}</p>
+      </form>`;
+
+    $('#view').className = '';
+    $('#view').removeAttribute('style');
+    $('#view').innerHTML = `
+      <div class="ev-layout">
+        <div class="ev-side">
+          <img class="ev-cover" src="${esc(ev.image_url || '/brand/hero.webp')}" alt="">
+          <p class="muted small-text">${s.by}</p>
+        </div>
+        <div class="ev-main">
+          <h1 class="ev-title">${esc(name)}</h1>
+          ${w ? `<div class="ev-fact"><div class="cal"><span>${w.mon}</span><b>${w.num}</b></div>
+                 <div><b>${esc(w.day)}</b><div class="muted">${esc(w.time)}</div></div></div>` : ''}
+          ${ev.venue || city ? `<div class="ev-fact"><div class="cal pin">📍</div>
+                 <div><b>${esc(ev.venue || city)}</b>${ev.venue && city ? `<div class="muted">${esc(city)}</div>` : ''}</div></div>` : ''}
+          <div class="card reg-card"><h2>${s.register}</h2>${reg}</div>
+          ${desc ? `<h2 class="about-h">${s.about}</h2><div class="about">${esc(desc).replace(/\n/g, '<br>')}</div>` : ''}
+        </div>
+      </div>`;
+
+    const form = $('#regForm');
+    if (form) form.onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = $('button', form);
+      btn.disabled = true;
+      $('#regError').textContent = '';
+      const { data, error } = await db.rpc('invite_register', {
+        p_slug: slug, p_name: form.name.value, p_email: form.email.value,
+        p_phone: form.phone.value || null, p_website: form.website.value || null,
+      });
+      btn.disabled = false;
+      if (error) { $('#regError').textContent = s.errors[error.message] || error.message; return; }
+      if (data === 'already_registered') { $('#regError').textContent = s.errors.already_registered; return; }
+      location.href = '/t/' + data;
+    };
+  }
+
+  $('#langBtn').onclick = () => {
+    lang = lang === 'ar' ? 'en' : 'ar';
+    try { localStorage.setItem('lang', lang); } catch { /* not saved */ }
+    if (ev) render();
+  };
+
+  if (!slug) { $('#view').textContent = L[lang].notFound; return; }
+  const { data, error } = await db.rpc('invite_get_event', { p_slug: slug });
+  if (error) { $('#view').textContent = L[lang].loadFail; return; }
+  ev = data && data[0];
+  if (!ev) { $('#view').textContent = L[lang].notFound; return; }
+  render();
+})();
+</script>
+</body>
+</html>
