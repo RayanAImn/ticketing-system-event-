@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "dev": "npx -y serve@14.2.4 web -l 5173 -c ../serve.json",
-    "test:email": "node supabase/tests/email_function_test.mjs"
+    "test:email": "node supabase/tests/email_function_test.mjs",
+    "test:wallet": "deno run -A --node-modules-dir=none --import-map=supabase/tests/wallet_import_map.json supabase/tests/wallet_pass_test.ts"
   },
   "devDependencies": {
     "esbuild": "0.24.0"

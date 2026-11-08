@@ -50,6 +50,16 @@ ok(m.html.includes('9:00') || m.html.includes('09:00'), 'time shown in Saudi tim
 ok(m.subject.includes('Safety Day 2026') && m.subject.includes('يوم السلامة 2026'), 'subject has both names');
 fs.writeFileSync(new URL('./email-preview.html', import.meta.url), m.html.replaceAll('http://localhost:5173/brand/', '../../web/brand/'));
 
+ok(!m.html.includes('Apple Wallet'), 'no Wallet button while Apple Wallet is not set up');
+
+// Same function with Apple Wallet set up: the email gets the Wallet button.
+env.APPLE_PASS_TYPE_ID = 'pass.test';
+await import('data:text/javascript;base64,' + Buffer.from(js + '\n// wallet').toString('base64'));
+await req({ secret: 'test-secret', body: JSON.stringify(payload) });
+ok(sent[1].html.includes('href="http://localhost:5173/wallet/' + 'a'.repeat(48) + '"') && sent[1].html.includes('Add to Apple Wallet'),
+  'Wallet button links to /wallet/<token> when set up');
+delete env.APPLE_PASS_TYPE_ID;
+
 resendStatus = 422;
 ok((await req({ secret: 'test-secret', body: JSON.stringify(payload) })).status === 502, 'Resend refusal reported (502), no retry loop');
 

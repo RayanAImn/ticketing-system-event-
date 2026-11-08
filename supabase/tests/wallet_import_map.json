@@ -1,0 +1,1 @@
+{ "imports": { "https://deno.land/std@0.177.0/http/server.ts": "./wallet_serve_stub.ts" } }

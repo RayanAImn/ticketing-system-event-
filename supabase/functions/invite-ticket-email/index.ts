@@ -12,6 +12,8 @@ const FROM_NAME = Deno.env.get("INVITE_FROM_NAME") ?? "JESCO & ArcelorMittal Eve
 const INVITE_EMAIL_SECRET = Deno.env.get("INVITE_EMAIL_SECRET") ?? "";
 // Where the ticket pages live, e.g. https://tickets.example.com
 const SITE_URL = (Deno.env.get("INVITE_SITE_URL") ?? "").replace(/\/+$/, "");
+// Set when invite-wallet-pass is configured (secrets are project-wide).
+const APPLE_WALLET = !!(Deno.env.get("APPLE_PASS_TYPE_ID") ?? "").trim();
 
 interface TicketPayload {
   ticketId: string;
@@ -60,7 +62,7 @@ function when(iso: string | null, end: string | null, locale: string): string {
   return `${day} · ${time(d)}${end ? " – " + time(new Date(end)) : ""}`;
 }
 
-function ticketEmailHtml(p: TicketPayload, ticketUrl: string): string {
+function ticketEmailHtml(p: TicketPayload, ticketUrl: string, walletUrl: string | null): string {
   const e = escapeHtml;
   const cover = p.imageUrl && /^https:\/\//.test(p.imageUrl) ? p.imageUrl : `${SITE_URL}/brand/hero.webp`;
   const nameAr = p.eventNameAr || p.eventName;
@@ -92,6 +94,8 @@ function ticketEmailHtml(p: TicketPayload, ticketUrl: string): string {
     </div>
     <div style="padding:16px 24px;text-align:center;">
       <a href="${e(ticketUrl)}" style="display:inline-block;background:#F05A22;color:#ffffff;text-decoration:none;font-weight:bold;font-size:16px;padding:13px 28px;border-radius:10px;">عرض تذكرتي · View my ticket</a>
+      ${walletUrl ? `<div style="height:10px;line-height:10px;">&nbsp;</div>
+      <a href="${e(walletUrl)}" style="display:inline-block;background:#000000;color:#ffffff;text-decoration:none;font-weight:bold;font-size:15px;padding:12px 24px;border-radius:10px;">Add to Apple Wallet · أضف إلى Apple Wallet</a>` : ""}
     </div>
     <div style="margin:0 24px 20px;padding:12px 16px;background:#f2f4f8;border-radius:10px;">
       <table role="presentation" width="100%" style="border-collapse:collapse;font-size:14px;" dir="ltr">
@@ -168,7 +172,8 @@ serve(async (req) => {
 
   const ticketUrl = `${SITE_URL}/t/${p.linkToken}`;
   const subject = `${p.eventNameAr ? p.eventNameAr + " · " : ""}${p.eventName} — تذكرتك · Your ticket`;
-  const sent = await sendEmail(p.guestEmail, subject, ticketEmailHtml(p, ticketUrl));
+  const walletUrl = APPLE_WALLET ? `${SITE_URL}/wallet/${p.linkToken}` : null;
+  const sent = await sendEmail(p.guestEmail, subject, ticketEmailHtml(p, ticketUrl, walletUrl));
 
   return new Response(JSON.stringify({ ok: sent }), {
     status: sent ? 200 : 502,

@@ -51,6 +51,12 @@
     qrHtml = `<div class="qr">${qr.createSvgTag({ cellSize: 6, margin: 0, scalable: true })}</div>`;
   }
 
+  // Apple devices only: elsewhere a .pkpass file can't be opened.
+  const apple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent);
+  const wallet = window.APP_CONFIG.APPLE_WALLET && apple && t.qr_token && t.status === 'active'
+    ? `<a class="wallet-btn" href="/wallet/${encodeURIComponent(token)}">Add to Apple Wallet · <span dir="rtl">أضف إلى Apple Wallet</span></a>`
+    : '';
+
   view.className = '';
   view.innerHTML = `
     <div class="ticket">
@@ -66,6 +72,7 @@
         ${qrHtml}
         <div class="guest">${esc(t.guest_name)}</div>
         <div class="muted">Show this code at the entrance<br><span dir="rtl">أبرز هذا الرمز عند الدخول</span></div>
+        ${wallet}
       </div>
       <div class="perf"></div>
       <div class="ticket-foot">

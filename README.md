@@ -40,13 +40,25 @@ Every function only works on events with `invite_managed = true`, so visit app e
    ```
    npx supabase functions deploy invite-ticket-email --project-ref vdsuwbpvpdzdmmexmgzz --no-verify-jwt
    ```
-4. **Roles.** Organisers and gate staff sign in with email and password:
+4. **Apple Wallet (optional).** Adds an **Add to Apple Wallet** button to the email and, on Apple devices, to the ticket page. It needs a Pass Type ID certificate from the Apple Developer account and Apple's WWDR G4 intermediate (https://www.apple.com/certificateauthority/AppleWWDRCAG4.cer).
+   ```
+   # From the certificate exported from Keychain as pass.p12:
+   openssl pkcs12 -in pass.p12 -clcerts -nokeys -out pass-cert.pem
+   openssl pkcs12 -in pass.p12 -nocerts -nodes -out pass-key.pem
+   openssl x509 -inform der -in AppleWWDRCAG4.cer -out wwdr.pem
+   npx supabase secrets set --project-ref vdsuwbpvpdzdmmexmgzz \
+     APPLE_PASS_TYPE_ID=pass.<your.id> APPLE_TEAM_ID=<team id> \
+     APPLE_PASS_CERT_PEM="$(cat pass-cert.pem)" APPLE_PASS_KEY_PEM="$(cat pass-key.pem)" APPLE_WWDR_PEM="$(cat wwdr.pem)"
+   npx supabase functions deploy invite-wallet-pass --project-ref vdsuwbpvpdzdmmexmgzz --no-verify-jwt
+   ```
+   With OpenSSL 3, add `-legacy` to the two `pkcs12` commands if they fail. Then redeploy `invite-ticket-email`: the button appears only once `APPLE_PASS_TYPE_ID` is set. The site sends `/wallet/<token>` to this function (see `vercel.json`). A pass shows the ticket as it was when added; it doesn't update if the ticket is later cancelled or given a new link. Set `APPLE_WALLET: false` in `web/config.js` to hide the button on the ticket page. The images in `supabase/functions/invite-wallet-pass/images/` are embedded in `images.ts`; regenerate that file if they change.
+5. **Roles.** Organisers and gate staff sign in with email and password:
    ```sql
    insert into public.user_roles (user_id, role_id)
    select u.id, r.id from auth.users u, public.roles r
    where u.email = 'organiser@example.com' and r.name = 'event_manager';   -- or 'ticket_scanner'
    ```
-5. **Deploy the site:** import this folder into Vercel as a **new** project (not `visit-app`). The camera needs HTTPS, which Vercel provides.
+6. **Deploy the site:** import this folder into Vercel as a **new** project (not `visit-app`). The camera needs HTTPS, which Vercel provides.
 
 ## Run locally
 
@@ -58,6 +70,7 @@ Then open `http://localhost:5173/?demo`.
 ## Tests
 
 - **Email function** (offline; nothing is sent): `npm install`, then `npm run test:email`.
+- **Wallet pass** (offline; needs Deno and openssl): `npm run test:wallet`. Builds a pass with a throwaway certificate and checks its signature with openssl.
 - **Database** (`supabase/tests/invite_tickets_test.sql`, pgTAP, 115 checks): run against a local copy of visit's database in Docker. Everything runs in one transaction that is rolled back.
   1. Start Docker Desktop.
   2. Make a folder outside visit-app with a `supabase/` folder holding a copy of visit-app's `supabase/config.toml`. Change its `project_id` and ports, and remove the `[functions.*]` sections.

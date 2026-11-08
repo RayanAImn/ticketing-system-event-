@@ -2,6 +2,7 @@
   "outputDirectory": "web",
   "cleanUrls": true,
   "rewrites": [
+    { "source": "/wallet/:token", "destination": "https://vdsuwbpvpdzdmmexmgzz.supabase.co/functions/v1/invite-wallet-pass?t=:token" },
     { "source": "/t/:token", "destination": "/ticket" },
     { "source": "/e/:slug", "destination": "/event" },
     { "source": "/", "destination": "/admin" }
