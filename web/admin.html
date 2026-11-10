@@ -73,6 +73,7 @@
               <div class="field"><label>Venue</label><input name="venue" placeholder="e.g. JESCO Main Hall" maxlength="160"></div>
               <div class="field"><label>City</label><select name="city_id" id="citySel" required></select></div>
             </div>
+            <div class="field"><label>Location link</label><input name="location_url" type="url" placeholder="https://maps.app.goo.gl/…" maxlength="1000"></div>
           </div>
 
           <div class="editor-box">
@@ -248,6 +249,7 @@
       f.starts_at.value = toLocalInput(ev.starts_at);
       f.ends_at.value = toLocalInput(ev.ends_at);
       f.venue.value = ev.venue || '';
+      f.location_url.value = ev.location_url || '';
       f.city_id.value = ev.city_id || '';
       f.description.value = ev.description || '';
       f.description_ar.value = ev.description_ar || '';
@@ -288,7 +290,8 @@
         name: f.name.value, name_ar: f.name_ar.value,
         description: f.description.value, description_ar: f.description_ar.value,
         starts_at: fromLocalInput(f.starts_at.value), ends_at: fromLocalInput(f.ends_at.value),
-        venue: f.venue.value, city_id: f.city_id.value, capacity: f.capacity.value,
+        venue: f.venue.value, location_url: f.location_url.value,
+        city_id: f.city_id.value, capacity: f.capacity.value,
         image_url: coverUrl, registration_open: f.registration_open.checked,
       },
     });
@@ -309,6 +312,7 @@
     $('#evWhen').textContent = '🗓 ' + fmtDate(c.starts_at) + (c.ends_at ? ' – ' + fmtDate(c.ends_at) : '');
     const city = cities.find((x) => x.id === c.city_id);
     $('#evWhere').textContent = '📍 ' + [c.venue, city && city.name].filter(Boolean).join(', ');
+    if (c.location_url) $('#evWhere').insertAdjacentHTML('beforeend', ` · <a href="${esc(c.location_url)}" target="_blank" rel="noopener">Map</a>`);
     $('#evRegState').textContent = c.registration_open ? 'Registration open' : 'Registration closed';
     $('#evRegState').className = 'pill ' + (c.registration_open ? 'redeemed' : 'cancelled');
     $('#evLink').value = eventUrl(c.slug);

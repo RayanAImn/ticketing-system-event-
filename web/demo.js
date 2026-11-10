@@ -17,7 +17,7 @@
     id: 'e1', slug: 'safety-day-2026', name: 'Safety Day 2026', name_ar: 'يوم السلامة 2026',
     description: 'A day of hands-on safety workshops, live demonstrations and recognition for the teams that keep our lines safe.\n\nLearn it, live it, prove it, take it back to the line.',
     description_ar: 'يوم من ورش العمل التطبيقية والعروض الحية وتكريم الفرق التي تحافظ على سلامة خطوط الإنتاج.',
-    starts_at: '2026-12-10T06:00:00Z', ends_at: '2026-12-10T12:00:00Z', venue: 'JESCO Main Hall',
+    starts_at: '2026-12-10T06:00:00Z', ends_at: '2026-12-10T12:00:00Z', venue: 'JESCO Main Hall', location_url: 'https://maps.app.goo.gl/9bhjeu8xQ1PwZLbC9',
     city_id: 'c1', capacity: 150, image_url: '/brand/hero.webp', registration_open: true,
   }];
   const tickets = [

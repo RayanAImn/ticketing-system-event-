@@ -28,6 +28,7 @@ interface TicketPayload {
   venue: string | null;
   city: string | null;
   cityAr: string | null;
+  locationUrl?: string | null;
   imageUrl: string | null;
 }
 
@@ -72,6 +73,8 @@ function ticketEmailHtml(p: TicketPayload, ticketUrl: string, walletUrl: string 
   const row = (label: string, value: string, dir: string) => value
     ? `<tr><td style="padding:6px 0;color:#66708a;width:90px;vertical-align:top;">${label}</td><td dir="${dir}" style="padding:6px 0;font-weight:bold;color:#1a2547;">${e(value)}</td></tr>`
     : "";
+  // Map link the organiser pasted; the database only stores https links.
+  const mapUrl = p.locationUrl && /^https:\/\/[^\s"<>]+$/.test(p.locationUrl) ? p.locationUrl : null;
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
@@ -109,6 +112,7 @@ function ticketEmailHtml(p: TicketPayload, ticketUrl: string, walletUrl: string 
         ${row("Where", whereEn, "ltr")}
         ${p.cityAr ? row("المكان", whereAr, "rtl") : ""}
       </table>
+      ${mapUrl ? `<p style="margin:8px 0 2px;text-align:center;font-size:14px;"><a href="${e(mapUrl)}" style="color:#233D7C;font-weight:bold;">📍 Open in Maps · افتح الموقع على الخريطة</a></p>` : ""}
     </div>
     <p style="margin:0 24px 22px;font-size:12px;color:#66708a;line-height:1.6;text-align:center;">
       This ticket is personal. Please don't share the link.<br>

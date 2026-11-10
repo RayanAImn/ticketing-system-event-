@@ -30,6 +30,7 @@ const payload = {
   ticketId: 't1', guestName: 'Sara <b>Alqahtani</b>', guestEmail: 'sara@example.com', linkToken: 'a'.repeat(48),
   eventName: 'Safety Day 2026', eventNameAr: 'يوم السلامة 2026', startsAt: '2026-12-10T06:00:00Z', endsAt: '2026-12-10T12:00:00Z',
   venue: 'JESCO Main Hall', city: 'Jubail', cityAr: 'الجبيل', imageUrl: null, staffId: '10234',
+  locationUrl: 'https://maps.app.goo.gl/9bhjeu8xQ1PwZLbC9',
 };
 
 ok((await req({ method: 'GET' })).status === 405, 'GET refused (405)');
@@ -49,6 +50,7 @@ ok(!m.html.includes('<b>Alqahtani</b>') && m.html.includes('&lt;b&gt;Alqahtani&l
 ok(m.html.includes('9:00') || m.html.includes('09:00'), 'time shown in Saudi time (06:00Z = 09:00)');
 ok(m.subject.includes('Safety Day 2026') && m.subject.includes('يوم السلامة 2026'), 'subject has both names');
 ok(m.html.includes('Staff ID') && m.html.includes('الرقم الوظيفي') && m.html.includes('10234'), 'staff ID shown');
+ok(m.html.includes('href="https://maps.app.goo.gl/9bhjeu8xQ1PwZLbC9"') && m.html.includes('Open in Maps'), 'location link shown');
 fs.writeFileSync(new URL('./email-preview.html', import.meta.url), m.html.replaceAll('http://localhost:5173/brand/', '../../web/brand/'));
 
 ok(!m.html.includes('Apple Wallet'), 'no Wallet button while Apple Wallet is not set up');
@@ -60,6 +62,11 @@ await req({ secret: 'test-secret', body: JSON.stringify(payload) });
 ok(sent[1].html.includes('href="http://localhost:5173/wallet/' + 'a'.repeat(48) + '"') && sent[1].html.includes('Add to Apple Wallet'),
   'Wallet button links to /wallet/<token> when set up');
 delete env.APPLE_PASS_TYPE_ID;
+
+await req({ secret: 'test-secret', body: JSON.stringify({ ...payload, locationUrl: 'javascript:alert(1)' }) });
+ok(!sent[2].html.includes('javascript:') && !sent[2].html.includes('Open in Maps'), 'non-https location link left out');
+await req({ secret: 'test-secret', body: JSON.stringify({ ...payload, locationUrl: null }) });
+ok(!sent[3].html.includes('Open in Maps'), 'no location link when none is set');
 
 resendStatus = 422;
 ok((await req({ secret: 'test-secret', body: JSON.stringify(payload) })).status === 502, 'Resend refusal reported (502), no retry loop');

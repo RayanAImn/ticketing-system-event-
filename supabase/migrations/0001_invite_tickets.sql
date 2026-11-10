@@ -66,7 +66,8 @@ create unique index if not exists tickets_guest_staff_id_uidx
 
 alter table public.events
   add column if not exists invite_managed           boolean not null default false,
-  add column if not exists invite_registration_open boolean not null default false;
+  add column if not exists invite_registration_open boolean not null default false,
+  add column if not exists invite_location_url      text;
 
 -- ---------------------------------------------------------------- roles (data)
 
@@ -219,6 +220,7 @@ begin
              'venue',       e.venue,
              'city',        public.invite_city_name(e.city_id, 'en'),
              'cityAr',      public.invite_city_name(e.city_id, 'ar'),
+             'locationUrl', e.invite_location_url,
              'imageUrl',    e.image_url)
       into v_body
     from public.tickets t
@@ -278,6 +280,7 @@ as $$
 $$;
 
 -- This site's events with guest counts. Organisers and scanners.
+drop function if exists public.invite_list_events();
 create or replace function public.invite_list_events()
 returns table (
   id                uuid,
@@ -289,6 +292,7 @@ returns table (
   starts_at         timestamptz,
   ends_at           timestamptz,
   venue             text,
+  location_url      text,
   city_id           uuid,
   capacity          integer,
   image_url         text,
@@ -305,7 +309,7 @@ as $$
   select e.id, e.slug,
          coalesce(en.title, e.slug), ar.title,
          nullif(en.description, ''), nullif(ar.description, ''),
-         e.starts_at, e.ends_at, e.venue, e.city_id, e.capacity,
+         e.starts_at, e.ends_at, e.venue, e.invite_location_url, e.city_id, e.capacity,
          nullif(e.image_url, ''), e.invite_registration_open,
          (select count(*) from public.tickets t where t.event_id = e.id and t.status <> 'cancelled'),
          (select count(*) from public.tickets t where t.event_id = e.id and t.status = 'redeemed')
@@ -320,7 +324,7 @@ $$;
 
 -- Creates (p_event_id null) or edits an event. Returns its id.
 -- p_event: {name, name_ar, description, description_ar, starts_at, ends_at,
---           venue, city_id, capacity, image_url, registration_open}
+--           venue, location_url, city_id, capacity, image_url, registration_open}
 create or replace function public.invite_save_event(p_event_id uuid, p_event jsonb)
 returns uuid
 language plpgsql
@@ -336,6 +340,7 @@ declare
   v_desc     text := trim(coalesce(p_event->>'description', ''));
   v_desc_ar  text := trim(coalesce(p_event->>'description_ar', ''));
   v_venue    text := nullif(left(trim(coalesce(p_event->>'venue', '')), 200), '');
+  v_location text := nullif(trim(coalesce(p_event->>'location_url', '')), '');
   v_image    text := left(trim(coalesce(p_event->>'image_url', '')), 1000);
   v_cap_txt  text := trim(coalesce(p_event->>'capacity', ''));
   v_open     boolean := coalesce((p_event->>'registration_open')::boolean, false);
@@ -366,14 +371,17 @@ begin
   end if;
   if length(v_desc) > 500 or length(v_desc_ar) > 500 then raise exception 'description_too_long'; end if;
   if v_image <> '' and v_image !~ '^https://[^\s"<>]+$' then raise exception 'bad_image_url'; end if;
+  if length(v_location) > 1000 or v_location !~ '^https://[^\s"<>]+$' then
+    raise exception 'bad_location_url';
+  end if;
 
   if v_id is null then
     insert into public.events
-      (city_id, starts_at, ends_at, venue, image_url, capacity, booking_mode, is_free,
+      (city_id, starts_at, ends_at, venue, invite_location_url, image_url, capacity, booking_mode, is_free,
        price_from, status, show_in_view_all, is_home_featured,
        invite_managed, invite_registration_open)
     values
-      (v_city, v_starts, v_ends, v_venue, v_image, v_capacity, 'ticket', true,
+      (v_city, v_starts, v_ends, v_venue, v_location, v_image, v_capacity, 'ticket', true,
        0, 'Draft', false, false, true, v_open)
     returning id into v_id;
   else
@@ -383,6 +391,7 @@ begin
     if v_capacity < v_live then raise exception 'capacity_below_guests'; end if;
     update public.events
        set city_id = v_city, starts_at = v_starts, ends_at = v_ends, venue = v_venue,
+           invite_location_url = v_location,
            image_url = v_image, capacity = v_capacity, invite_registration_open = v_open
      where id = v_id;
     -- Keep the ticket titles (shown in visit's dashboard) in step with the name.

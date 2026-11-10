@@ -106,6 +106,7 @@ select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json('{"
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json(jsonb_build_object('ends_at', now()))) $$, null::char(5), 'ends_before_start', 'end before start refused');
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json('{"capacity":"-1"}')) $$, null::char(5), 'bad_capacity', 'bad capacity refused');
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json('{"image_url":"javascript:alert(1)"}')) $$, null::char(5), 'bad_image_url', 'non-https image refused');
+select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json('{"location_url":"javascript:alert(1)"}')) $$, null::char(5), 'bad_location_url', 'non-https location refused');
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json(jsonb_build_object('description', repeat('x', 501)))) $$, null::char(5), 'description_too_long', 'description over 500 refused');
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json(jsonb_build_object('description_ar', repeat('س', 501)))) $$, null::char(5), 'description_too_long', 'Arabic description over 500 refused');
 select throws_ok($$ select public.invite_save_event('20000000-0000-0000-0000-000000000001', pg_temp.event_json()) $$, null::char(5), 'event_not_found', 'cannot edit a visit app event');
