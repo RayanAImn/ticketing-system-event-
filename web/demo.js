@@ -68,6 +68,7 @@
     invite_cancel_ticket: ({ p_ticket_id }) => { tickets.find((t) => t.id === p_ticket_id).status = 'cancelled'; },
     invite_regenerate_link: ({ p_ticket_id }) => { Object.assign(tickets.find((t) => t.id === p_ticket_id), { link_token: hex(24), qr_token: hex(32) }); },
     invite_resend_email: () => null,
+    invite_resend_all_emails: ({ p_event_id }) => tickets.filter((t) => t.event_id === p_event_id && t.status === 'active' && t.guest_email).length,
     invite_get_event: ({ p_slug }) => events.filter((e) => e.slug === p_slug).map((e) => {
       const c = cities.find((x) => x.id === e.city_id) || {};
       return { ...e, city: c.name, city_ar: c.name_ar, spots_left: e.capacity == null ? null : Math.max(e.capacity - live(e), 0) };

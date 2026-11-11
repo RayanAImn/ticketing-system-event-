@@ -297,6 +297,13 @@ select is((select status from public.tickets where id = '30000000-0000-0000-0000
 select is((select count(*) from pg_temp.invite_calls() c where c->>'guestEmail' = 'sara@example.com')::int, 3, 'resend and new link both email Sara');
 select ok((select link_token <> (select v from ids where k = 'sara_link') and qr_token <> (select v from ids where k = 'sara_qr')
            from public.tickets where id = (select v::uuid from ids where k = 'sara')), 'new link and QR replace the old ones');
+insert into ids select 'with_email', count(*)::text from public.tickets
+  where event_id = (select v::uuid from ids where k = 'ev') and status = 'active' and guest_email is not null;
+set local role authenticated;
+select is(public.invite_resend_all_emails((select v::uuid from ids where k = 'ev')), (select v::int from ids where k = 'with_email'), 'Email all queues every guest with an email');
+select throws_ok($$ select public.invite_resend_all_emails(null) $$, null::char(5), 'event_not_found', 'Email all needs an event');
+reset role;
+select is((select count(*) from pg_temp.invite_calls() c where c->>'guestEmail' = 'sara@example.com')::int, 4, 'Email all emails Sara again');
 set local role anon;
 select is((select count(*) from public.invite_get_ticket((select v from ids where k = 'sara_link')))::int, 0, 'old link stops working');
 select is((select count(*) from public.invite_get_ticket('short'))::int, 0, 'bad link returns nothing');
@@ -421,6 +428,7 @@ select is(public.invite_create_tickets((select v::uuid from ids where k = 'ev_ot
 reset role;
 insert into ids select 'zed', id::text from public.tickets where guest_name = 'Zed';
 insert into ids select 'zed_qr', qr_token from public.tickets where guest_name = 'Zed';
+insert into ids select 'zed_ev', event_id::text from public.tickets where guest_name = 'Zed';
 insert into public.invite_event_staff (user_id, event_id) values ('10000000-0000-0000-0000-0000000000b1', (select v::uuid from ids where k = 'ev'));
 
 select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000b1', true);
@@ -433,6 +441,7 @@ select throws_ok($$ select public.invite_create_tickets((select v::uuid from ids
 select throws_ok($$ select public.invite_cancel_ticket((select v::uuid from ids where k = 'zed')) $$, '42501', 'not_admin', 'cannot cancel another event''s ticket');
 select throws_ok($$ select public.invite_regenerate_link((select v::uuid from ids where k = 'zed')) $$, '42501', 'not_admin', 'cannot make a new link on another event');
 select throws_ok($$ select public.invite_resend_email((select v::uuid from ids where k = 'zed')) $$, '42501', 'not_admin', 'cannot resend on another event');
+select throws_ok($$ select public.invite_resend_all_emails((select v::uuid from ids where k = 'zed_ev')) $$, '42501', 'not_admin', 'cannot email all on another event');
 select throws_ok($$ select public.invite_save_event((select v::uuid from ids where k = 'ev_other'), pg_temp.event_json()) $$, '42501', 'not_admin', 'cannot edit another event');
 select throws_ok($$ select public.invite_save_event(null, pg_temp.event_json()) $$, '42501', 'not_admin', 'cannot create events');
 select throws_ok($$ select public.invite_delete_event((select v::uuid from ids where k = 'ev_other')) $$, '42501', 'not_admin', 'cannot delete events');

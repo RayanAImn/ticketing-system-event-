@@ -632,6 +632,35 @@ begin
 end;
 $$;
 
+-- Email every active guest of the event who has an email their ticket again
+-- (same link and QR). Returns how many were queued.
+create or replace function public.invite_resend_all_emails(p_event_id uuid)
+returns int
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+declare
+  v_id uuid;
+  v_n  int := 0;
+begin
+  if p_event_id is null then raise exception 'event_not_found'; end if;
+  perform public.invite_require_event(p_event_id);
+  for v_id in
+    select t.id from public.tickets t
+    join public.events e on e.id = t.event_id and e.invite_managed
+    where t.event_id = p_event_id and t.status = 'active'
+      and t.guest_name is not null and t.guest_email is not null
+    order by t.created_at
+  loop
+    perform public.invite_queue_email(v_id);
+    v_n := v_n + 1;
+  end loop;
+  return v_n;
+end;
+$$;
+
 -- ---------------------------------------------------------------- organiser: other organisers
 
 -- Organisers added to this event (not the event_managers, who manage every event).
@@ -1009,6 +1038,7 @@ revoke all on function public.invite_create_tickets(uuid, jsonb)           from 
 revoke all on function public.invite_cancel_ticket(uuid)                   from public, anon;
 revoke all on function public.invite_regenerate_link(uuid)                 from public, anon;
 revoke all on function public.invite_resend_email(uuid)                    from public, anon;
+revoke all on function public.invite_resend_all_emails(uuid)               from public, anon;
 revoke all on function public.invite_block_app_ticket()                    from public, anon, authenticated;
 revoke all on function public.invite_get_event(text)                       from public;
 revoke all on function public.invite_register(text, text, text, text, text) from public;
@@ -1029,6 +1059,7 @@ grant execute on function public.invite_create_tickets(uuid, jsonb)           to
 grant execute on function public.invite_cancel_ticket(uuid)                   to authenticated;
 grant execute on function public.invite_regenerate_link(uuid)                 to authenticated;
 grant execute on function public.invite_resend_email(uuid)                    to authenticated;
+grant execute on function public.invite_resend_all_emails(uuid)               to authenticated;
 grant execute on function public.invite_get_event(text)                       to anon, authenticated;
 grant execute on function public.invite_register(text, text, text, text, text) to anon, authenticated;
 grant execute on function public.invite_get_ticket(text)                      to anon, authenticated;

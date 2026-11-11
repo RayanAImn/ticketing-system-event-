@@ -175,6 +175,7 @@
           <h2 style="margin:0">Guests</h2>
           <span class="spacer"></span>
           <input id="search" placeholder="Search name, staff ID, phone, email" style="max-width:260px">
+          <button class="small" id="emailAllBtn" title="Email every guest their ticket again">Email all</button>
           <button class="small" id="exportBtn">Export CSV</button>
           <button class="small" id="refreshBtn">Refresh</button>
         </div>
@@ -563,6 +564,18 @@
       $('#bulk').value = '';
       $('#bulkError').textContent = `Added ${n} guests.`;
     } catch (err) { $('#bulkError').textContent = err.message; }
+  };
+
+  $('#emailAllBtn').onclick = async () => {
+    const n = tickets.filter((t) => t.status === 'active' && t.guest_email).length;
+    if (!n) { alert('No guest has an email.'); return; }
+    if (!confirm(`Email all ${n} guests their ticket again? Same link and QR. Sending takes a minute or two.`)) return;
+    const btn = $('#emailAllBtn');
+    btn.disabled = true;
+    const { data, error } = await db.rpc('invite_resend_all_emails', { p_event_id: current.id });
+    if (error) { alert(errText(error)); btn.disabled = false; return; }
+    btn.textContent = `Sent ${data} ✓`;
+    setTimeout(() => { btn.textContent = 'Email all'; btn.disabled = false; }, 5000);
   };
 
   $('#rows').onclick = async (e) => {

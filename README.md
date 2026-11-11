@@ -4,7 +4,7 @@ A Luma-style event site whose data lives in the **visit app's own `events` and `
 
 | Page | Who | What |
 |---|---|---|
-| `/` | organiser (`event_manager`) | create and edit events (cover, name EN/AR, dates, venue, city, capacity, public registration on/off), add or import guests, resend email, copy link, WhatsApp, new link, cancel, live counts, CSV |
+| `/` | organiser (`event_manager`) | create and edit events (cover, name EN/AR, dates, venue, city, capacity, public registration on/off), add or import guests, resend email (one guest or all), copy link, WhatsApp, new link, cancel, live counts, CSV |
 | `/e/<slug>` | anyone with the link | event page with a sign-up form, until the capacity is full |
 | `/t/<token>` | guest | the ticket with QR, Arabic + English |
 | `/scan` | organiser, scanner (`ticket_scanner`) | camera scanner + manual entry |
@@ -71,7 +71,7 @@ Then open `http://localhost:5173/?demo`.
 
 - **Email function** (offline; nothing is sent): `npm install`, then `npm run test:email`.
 - **Wallet pass** (offline; needs Deno and openssl): `npm run test:wallet`. Builds a pass with a throwaway certificate and checks its signature with openssl.
-- **Database** (`supabase/tests/invite_tickets_test.sql`, pgTAP, 115 checks): run against a local copy of visit's database in Docker. Everything runs in one transaction that is rolled back.
+- **Database** (`supabase/tests/invite_tickets_test.sql`, pgTAP, 168 checks): run against a local copy of visit's database in Docker. Everything runs in one transaction that is rolled back.
   1. Start Docker Desktop.
   2. Make a folder outside visit-app with a `supabase/` folder holding a copy of visit-app's `supabase/config.toml`. Change its `project_id` and ports, and remove the `[functions.*]` sections.
   3. Copy in visit-app's `supabase/migrations/*`, then add `supabase/migrations/0001_invite_tickets.sql` as the newest migration and this test into `supabase/tests/database/`.
@@ -85,7 +85,7 @@ Then open `http://localhost:5173/?demo`.
 ## Notes
 
 - Emails share visit's Resend account and quota. Resend accepts a few emails per second; the function waits and retries, so a big list import is emailed over a minute or two.
-- A failed email never blocks a ticket. Use **Resend email** on the guest's row.
+- A failed email never blocks a ticket. Use **Resend email** on the guest's row, or **Email all** above the guest list to email every guest their ticket again.
 - Someone signing up again with the same email doesn't see the ticket; it is emailed to that inbox again (at most 3 times an hour).
 - Sign-ups are limited to 60 per 10 minutes per IP address (a whole office may share one).
 - A guest link holds 48 random hex characters and the QR holds 64. If a link reaches the wrong person, use **New link**: the old link and QR stop working and the guest is emailed the new one.
