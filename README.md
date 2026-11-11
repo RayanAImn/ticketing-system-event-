@@ -25,6 +25,8 @@ Every guest with an email gets their ticket by email, sent from visit's sender (
 
 Every function only works on events with `invite_managed = true`, so visit app events and tickets cannot be read, changed or scanned from this site.
 
+Once an event has ended (its end time, or its start time when it has no end, has passed) it is **closed**: the organiser page for it is read only (no editing or deleting the event, no adding, cancelling, re-linking or emailing guests, no adding or removing organisers), and its tickets show and scan as **expired**. The database enforces this, not just the page. A database set up before this change runs `supabase/migrations/0009_closed_events.sql` once.
+
 ## Setup (one time)
 
 1. **Run the SQL.** Paste `supabase/migrations/0001_invite_tickets.sql` into the SQL editor (https://supabase.com/dashboard/project/vdsuwbpvpdzdmmexmgzz/sql/new) and run it.
@@ -71,7 +73,7 @@ Then open `http://localhost:5173/?demo`.
 
 - **Email function** (offline; nothing is sent): `npm install`, then `npm run test:email`.
 - **Wallet pass** (offline; needs Deno and openssl): `npm run test:wallet`. Builds a pass with a throwaway certificate and checks its signature with openssl.
-- **Database** (`supabase/tests/invite_tickets_test.sql`, pgTAP, 168 checks): run against a local copy of visit's database in Docker. Everything runs in one transaction that is rolled back.
+- **Database** (`supabase/tests/invite_tickets_test.sql`, pgTAP, 185 checks): run against a local copy of visit's database in Docker. Everything runs in one transaction that is rolled back.
   1. Start Docker Desktop.
   2. Make a folder outside visit-app with a `supabase/` folder holding a copy of visit-app's `supabase/config.toml`. Change its `project_id` and ports, and remove the `[functions.*]` sections.
   3. Copy in visit-app's `supabase/migrations/*`, then add `supabase/migrations/0001_invite_tickets.sql` as the newest migration and this test into `supabase/tests/database/`.

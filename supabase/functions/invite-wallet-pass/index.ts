@@ -182,6 +182,7 @@ serve(async (req) => {
   }
   const t: Ticket | undefined = (await res.json())[0];
   if (!t) return text("This ticket link is not valid.", 404);
+  if (t.status === "expired") return text("This event has ended, so the ticket has expired.", 410);
   if (t.status === "cancelled" || !t.qr_token) return text("This ticket was cancelled.", 410);
 
   try {

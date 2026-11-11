@@ -63,6 +63,7 @@
     ticket_not_active: 'This ticket is no longer active.',
     no_email: 'This guest has no email address.',
     event_not_found: 'Event not found.',
+    event_closed: 'This event has ended, so it can no longer be changed.',
     cannot_remove_self: 'You cannot remove yourself.',
     organiser_not_found: 'This organiser was already removed.',
     could_not_create_account: 'Could not create an account for this email. Try again.',

@@ -163,6 +163,36 @@ begin
 end;
 $$;
 
+-- An event is closed once its end (or, without one, its start) has passed. A
+-- closed event is read only: no edits, no guests added, cancelled or emailed,
+-- no organisers added or removed, and its tickets show and scan as expired.
+create or replace function public.invite_event_closed(p_event_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path to ''
+as $$
+  select coalesce((select coalesce(e.ends_at, e.starts_at) <= now()
+                   from public.events e where e.id = p_event_id), false);
+$$;
+
+-- invite_require_event, and the event must not be closed.
+create or replace function public.invite_require_open_event(p_event_id uuid)
+returns void
+language plpgsql
+stable
+security definer
+set search_path to ''
+as $$
+begin
+  perform public.invite_require_event(p_event_id);
+  if public.invite_event_closed(p_event_id) then
+    raise exception 'event_closed';
+  end if;
+end;
+$$;
+
 -- ---------------------------------------------------------------- city names
 
 -- City name in 'en' or 'ar'. visit keeps city names in city_translations; the
@@ -297,6 +327,7 @@ returns table (
   capacity          integer,
   image_url         text,
   registration_open boolean,
+  closed            boolean,
   invited           bigint,
   checked_in        bigint
 )
@@ -311,6 +342,7 @@ as $$
          nullif(en.description, ''), nullif(ar.description, ''),
          e.starts_at, e.ends_at, e.venue, e.invite_location_url, e.city_id, e.capacity,
          nullif(e.image_url, ''), e.invite_registration_open,
+         coalesce(e.ends_at, e.starts_at) <= now(),
          (select count(*) from public.tickets t where t.event_id = e.id and t.status <> 'cancelled'),
          (select count(*) from public.tickets t where t.event_id = e.id and t.status = 'redeemed')
   from public.events e
@@ -350,7 +382,7 @@ declare
   v_capacity integer;
   v_live     integer;
 begin
-  perform public.invite_require_event(p_event_id);
+  perform public.invite_require_open_event(p_event_id);
   if p_event_id is null and public.invite_assigned_only() then
     raise exception 'not_admin' using errcode = '42501';
   end if;
@@ -430,6 +462,7 @@ begin
   if public.invite_assigned_only() then raise exception 'not_admin' using errcode = '42501'; end if;
   perform 1 from public.events where id = p_event_id and invite_managed for update;
   if not found then raise exception 'event_not_found'; end if;
+  if public.invite_event_closed(p_event_id) then raise exception 'event_closed'; end if;
   if exists (select 1 from public.tickets where event_id = p_event_id) then
     raise exception 'event_has_guests';
   end if;
@@ -463,7 +496,9 @@ begin
   perform public.invite_require_event(p_event_id);
   return query
   select t.id, t.guest_name, t.guest_phone, t.guest_email, t.guest_note, t.guest_staff_id, t.link_token,
-         t.status, t.redeemed_at, t.created_at
+         case when t.status = 'active' and coalesce(e.ends_at, e.starts_at) <= now() then 'expired'
+              else t.status end,
+         t.redeemed_at, t.created_at
   from public.tickets t
   join public.events e on e.id = t.event_id and e.invite_managed
   where t.event_id = p_event_id and t.guest_name is not null
@@ -562,7 +597,7 @@ as $$
 declare
   v_count integer;
 begin
-  perform public.invite_require_event(p_event_id);
+  perform public.invite_require_open_event(p_event_id);
   perform 1 from public.events where id = p_event_id and invite_managed for update;
   if not found then raise exception 'event_not_found'; end if;
   select count(*) into v_count from public.invite_insert_guests(p_event_id, p_guests);
@@ -578,7 +613,7 @@ set search_path to ''
 set row_security to 'off'
 as $$
 begin
-  perform public.invite_require_event((select event_id from public.tickets where id = p_ticket_id));
+  perform public.invite_require_open_event((select event_id from public.tickets where id = p_ticket_id));
   update public.tickets t set status = 'cancelled'
   from public.events e
   where t.id = p_ticket_id and e.id = t.event_id and e.invite_managed
@@ -597,7 +632,7 @@ set search_path to ''
 set row_security to 'off'
 as $$
 begin
-  perform public.invite_require_event((select event_id from public.tickets where id = p_ticket_id));
+  perform public.invite_require_open_event((select event_id from public.tickets where id = p_ticket_id));
   update public.tickets t
      set link_token = encode(extensions.gen_random_bytes(24), 'hex'),
          qr_token   = encode(extensions.gen_random_bytes(32), 'hex')
@@ -617,7 +652,7 @@ set search_path to ''
 set row_security to 'off'
 as $$
 begin
-  perform public.invite_require_event((select event_id from public.tickets where id = p_ticket_id));
+  perform public.invite_require_open_event((select event_id from public.tickets where id = p_ticket_id));
   if not exists (
     select 1 from public.tickets t
     join public.events e on e.id = t.event_id and e.invite_managed
@@ -646,7 +681,7 @@ declare
   v_n  int := 0;
 begin
   if p_event_id is null then raise exception 'event_not_found'; end if;
-  perform public.invite_require_event(p_event_id);
+  perform public.invite_require_open_event(p_event_id);
   for v_id in
     select t.id from public.tickets t
     join public.events e on e.id = t.event_id and e.invite_managed
@@ -697,7 +732,7 @@ declare
   v_email text := lower(trim(coalesce(p_email, '')));
   v_user  uuid;
 begin
-  perform public.invite_require_event(p_event_id);
+  perform public.invite_require_open_event(p_event_id);
   perform 1 from public.events where id = p_event_id and invite_managed;
   if not found then raise exception 'event_not_found'; end if;
   if length(v_email) > 200 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
@@ -730,7 +765,7 @@ set search_path to ''
 set row_security to 'off'
 as $$
 begin
-  perform public.invite_require_event(p_event_id);
+  perform public.invite_require_open_event(p_event_id);
   if p_user_id = auth.uid() then raise exception 'cannot_remove_self'; end if;
   delete from public.invite_event_staff where event_id = p_event_id and user_id = p_user_id;
   if not found then raise exception 'organiser_not_found'; end if;
@@ -903,8 +938,11 @@ set row_security to 'off'
 as $$
   select t.guest_name,
          t.guest_staff_id,
-         t.status,
-         case when t.status = 'cancelled' then null else t.qr_token end,
+         case when t.status = 'active' and coalesce(e.ends_at, e.starts_at) <= now() then 'expired'
+              else t.status end,
+         case when t.status = 'cancelled'
+                or (t.status = 'active' and coalesce(e.ends_at, e.starts_at) <= now()) then null
+              else t.qr_token end,
          t.redeemed_at,
          coalesce(en.title, e.slug),
          ar.title,
@@ -972,7 +1010,7 @@ begin
     v_status := 'ticket_cancelled';
   elsif v_ticket.status = 'redeemed' or v_ticket.redeemed_at is not null then
     v_status := 'ticket_already_redeemed';
-  elsif v_ticket.status = 'expired' then
+  elsif v_ticket.status = 'expired' or public.invite_event_closed(v_ticket.event_id) then
     v_status := 'ticket_expired';
   else
     update public.tickets
@@ -1023,6 +1061,8 @@ revoke all on function public.invite_queue_email(uuid)                     from 
 revoke all on function public.invite_assigned_only()                       from public, anon;
 revoke all on function public.invite_event_allowed(uuid)                   from public, anon, authenticated;
 revoke all on function public.invite_require_event(uuid)                   from public, anon, authenticated;
+revoke all on function public.invite_event_closed(uuid)                    from public, anon, authenticated;
+revoke all on function public.invite_require_open_event(uuid)              from public, anon, authenticated;
 revoke all on function public.invite_list_organisers(uuid)                 from public, anon;
 revoke all on function public.invite_add_organiser(uuid, text)             from public, anon;
 revoke all on function public.invite_remove_organiser(uuid, uuid)          from public, anon;

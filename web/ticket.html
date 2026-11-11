@@ -41,6 +41,8 @@
     banner = `<div class="status-banner redeemed">Checked in · تم الدخول<br><small>${esc(fmtDate(t.redeemed_at))}</small></div>`;
   } else if (t.status === 'cancelled') {
     banner = `<div class="status-banner cancelled">This ticket was cancelled · تم إلغاء هذه التذكرة</div>`;
+  } else if (t.status === 'expired') {
+    banner = `<div class="status-banner cancelled">This event has ended, the ticket has expired · انتهت الفعالية وانتهت صلاحية التذكرة</div>`;
   }
 
   let qrHtml = '';
@@ -72,7 +74,7 @@
         ${qrHtml}
         <div class="guest">${esc(t.guest_name)}</div>
         ${t.staff_id ? `<div class="staff-id">Staff ID · الرقم الوظيفي: <b>${esc(t.staff_id)}</b></div>` : ''}
-        <div class="muted">Show this code at the entrance<br><span dir="rtl">أبرز هذا الرمز عند الدخول</span></div>
+        ${t.qr_token ? '<div class="muted">Show this code at the entrance<br><span dir="rtl">أبرز هذا الرمز عند الدخول</span></div>' : ''}
         ${wallet}
       </div>
       <div class="perf"></div>

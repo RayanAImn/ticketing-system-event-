@@ -488,5 +488,42 @@ select is((select count(*) from public.invite_list_events() where id in ((select
 select lives_ok($$ select public.invite_cancel_ticket((select v::uuid from ids where k = 'zed')) $$, 'full organiser still cancels on any event');
 reset role;
 
+-- ---------------------------------------------------------------- closed (ended) events
+
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
+set local role authenticated;
+select lives_ok($$ insert into ids select 'past', public.invite_save_event(null, pg_temp.event_json('{"name":"Past day","capacity":""}'))::text $$, 'event that will end');
+select lives_ok($$ select public.invite_create_tickets((select v::uuid from ids where k = 'past'),
+  '[{"name":"Ava","email":"ava@x.com"},{"name":"Ben"}]'::jsonb) $$, 'guests added before it ends');
+reset role;
+insert into ids select 'ava', id::text from public.tickets where guest_name = 'Ava';
+insert into ids select 'ava_link', link_token from public.tickets where guest_name = 'Ava';
+insert into ids select 'ava_qr', qr_token from public.tickets where guest_name = 'Ava';
+update public.events set starts_at = now() - interval '2 days', ends_at = now() - interval '1 day'
+where id = (select v::uuid from ids where k = 'past');
+
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
+set local role authenticated;
+select is((select closed from public.invite_list_events() where id = (select v::uuid from ids where k = 'past')), true, 'ended event is closed');
+select is((select closed from public.invite_list_events() where id = (select v::uuid from ids where k = 'ev')), false, 'upcoming event is not closed');
+select results_eq($$ select distinct status from public.invite_list_tickets((select v::uuid from ids where k = 'past')) $$,
+  $$ values ('expired'::text) $$, 'active tickets of an ended event read as expired');
+select throws_ok($$ select public.invite_create_tickets((select v::uuid from ids where k = 'past'), '[{"name":"Cy"}]'::jsonb) $$,
+  null::char(5), 'event_closed', 'no guests added to an ended event');
+select throws_ok($$ select public.invite_cancel_ticket((select v::uuid from ids where k = 'ava')) $$, null::char(5), 'event_closed', 'no cancelling on an ended event');
+select throws_ok($$ select public.invite_regenerate_link((select v::uuid from ids where k = 'ava')) $$, null::char(5), 'event_closed', 'no new link on an ended event');
+select throws_ok($$ select public.invite_resend_email((select v::uuid from ids where k = 'ava')) $$, null::char(5), 'event_closed', 'no resend on an ended event');
+select throws_ok($$ select public.invite_resend_all_emails((select v::uuid from ids where k = 'past')) $$, null::char(5), 'event_closed', 'no email all on an ended event');
+select throws_ok($$ select public.invite_save_event((select v::uuid from ids where k = 'past'), pg_temp.event_json('{"name":"Past day"}')) $$,
+  null::char(5), 'event_closed', 'ended event cannot be edited');
+select throws_ok($$ select public.invite_delete_event((select v::uuid from ids where k = 'past')) $$, null::char(5), 'event_closed', 'ended event cannot be deleted');
+select throws_ok($$ select public.invite_add_organiser((select v::uuid from ids where k = 'past'), 'gate@test.local') $$, null::char(5), 'event_closed', 'no organisers added to an ended event');
+select is((select count(*) from public.invite_list_organisers((select v::uuid from ids where k = 'past')))::int, 0, 'organisers of an ended event can still be read');
+select is((select status from public.invite_scan_ticket((select v from ids where k = 'ava_qr'))), 'ticket_expired', 'ticket of an ended event scans as expired');
+reset role;
+select is((select status from public.tickets where id = (select v::uuid from ids where k = 'ava')), 'active', 'expired scan does not check the guest in');
+select results_eq($$ select status, qr_token from public.invite_get_ticket((select v from ids where k = 'ava_link')) $$,
+  $$ values ('expired'::text, null::text) $$, 'guest sees an expired ticket with no QR');
+
 select * from finish();
 rollback;

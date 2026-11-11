@@ -124,6 +124,8 @@
         </div>
       </div>
 
+      <div class="status-banner cancelled" id="closedNote" hidden>This event has ended. Its tickets have expired and the page is read only.</div>
+
       <div class="stats">
         <div class="stat"><span class="muted">Going</span><b id="sTotal">0</b></div>
         <div class="stat"><span class="muted">Checked in</span><b id="sIn">0</b></div>
@@ -142,7 +144,7 @@
         <p class="error" id="orgError"></p>
       </div>
 
-      <div class="card">
+      <div class="card" id="addGuestCard">
         <h2>Add a guest</h2>
         <p class="muted" style="margin-top:-6px; font-size:.88rem">Guests with an email get their ticket by email automatically.</p>
         <form id="addGuest">
@@ -194,6 +196,7 @@
   const { db, $, esc, fmtDate, ticketUrl, eventUrl, toLocalInput, fromLocalInput, errText, setupLogin, signOut } = T;
   let events = [], cities = [], tickets = [], current = null, editing = null, coverUrl = '';
   let assignedOnly = false; // organiser limited to some events: no new or delete
+  let closed = false;       // the open event has ended: read only
 
   function show(view) {
     for (const id of ['listView', 'editView', 'eventView']) $('#' + id).hidden = id !== view;
@@ -213,7 +216,8 @@
           <div class="muted small-text">${esc(fmtDate(e.starts_at))}</div>
           <b>${esc(e.name)}</b>
           <div class="muted small-text">${e.invited} going${e.capacity != null ? ` of ${e.capacity}` : ''} · ${e.checked_in} checked in</div>
-          <span class="pill ${e.registration_open ? 'redeemed' : 'active'}">${e.registration_open ? 'Registration open' : 'Invite only'}</span>
+          ${e.closed ? '<span class="pill expired">Ended</span>'
+            : `<span class="pill ${e.registration_open ? 'redeemed' : 'active'}">${e.registration_open ? 'Registration open' : 'Invite only'}</span>`}
         </div>
       </button>`).join('')
       || '<div class="card muted" style="text-align:center">No events yet. Create your first one.</div>';
@@ -314,11 +318,16 @@
     const city = cities.find((x) => x.id === c.city_id);
     $('#evWhere').textContent = '📍 ' + [c.venue, city && city.name].filter(Boolean).join(', ');
     if (c.location_url) $('#evWhere').insertAdjacentHTML('beforeend', ` · <a href="${esc(c.location_url)}" target="_blank" rel="noopener">Map</a>`);
-    $('#evRegState').textContent = c.registration_open ? 'Registration open' : 'Registration closed';
-    $('#evRegState').className = 'pill ' + (c.registration_open ? 'redeemed' : 'cancelled');
+    closed = !!c.closed;
+    $('#evRegState').textContent = closed ? 'Ended' : c.registration_open ? 'Registration open' : 'Registration closed';
+    $('#evRegState').className = 'pill ' + (c.registration_open && !closed ? 'redeemed' : 'cancelled');
     $('#evLink').value = eventUrl(c.slug);
     $('#openEventLink').href = '/e/' + c.slug;
     $('#scanBtn').href = '/scan?event=' + encodeURIComponent(c.id);
+    $('#closedNote').hidden = !closed;
+    $('#editBtn').hidden = $('#addGuestCard').hidden = $('#addOrg').hidden = $('#emailAllBtn').hidden = closed;
+    $('#deleteBtn').hidden = assignedOnly || closed;
+    $('#orgError').textContent = '';
     show('eventView');
     loadOrganisers();
     await loadTickets();
@@ -370,7 +379,8 @@
         <td>${esc(t.guest_email || '')}${t.guest_phone ? `<br><small class="muted">${esc(t.guest_phone)}</small>` : ''}</td>
         <td><span class="pill ${t.status}">${statusText}</span></td>
         <td><div class="row">
-          ${t.status !== 'cancelled' ? `
+          ${closed && t.status !== 'cancelled' ? `<a class="btn small" target="_blank" rel="noopener" href="${ticketUrl(t.link_token)}">Open</a>` : ''}
+          ${!closed && t.status !== 'cancelled' ? `
             ${t.guest_email ? '<button class="small" data-act="email">Resend email</button>' : ''}
             <button class="small" data-act="copy">Copy link</button>
             ${t.guest_phone ? `<a class="btn small" target="_blank" rel="noopener" href="${waLink(t)}">WhatsApp</a>` : ''}
@@ -427,8 +437,8 @@
         <span>${esc(o.email)}${o.is_you ? ' <small class="muted">(you)</small>' : ''}</span>
         <span class="spacer"></span>
         ${o.signed_in ? '' : '<small class="muted">not signed in yet</small>'}
-        <button class="small" data-act="resend" title="Email the sign-in links again">Resend email</button>
-        ${o.is_you ? '' : '<button class="small danger" data-act="remove">Remove</button>'}
+        ${closed ? '' : '<button class="small" data-act="resend" title="Email the sign-in links again">Resend email</button>'}
+        ${o.is_you || closed ? '' : '<button class="small danger" data-act="remove">Remove</button>'}
       </div>`).join('') || '<p class="muted">No organisers added yet.</p>';
   }
 
