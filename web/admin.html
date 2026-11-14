@@ -124,13 +124,32 @@
         </div>
       </div>
 
-      <div class="status-banner cancelled" id="closedNote" hidden>This event has ended. Its tickets have expired and the page is read only.</div>
+      <div class="status-banner cancelled" id="closedNote" hidden>This event has ended. Its tickets have expired and the page is read only, except bus counts not saved yet.</div>
 
       <div class="stats">
         <div class="stat"><span class="muted">Going</span><b id="sTotal">0</b></div>
         <div class="stat"><span class="muted">Checked in</span><b id="sIn">0</b></div>
         <div class="stat"><span class="muted">Places left</span><b id="sLeft">0</b></div>
         <div class="stat"><span class="muted">Cancelled</span><b id="sCancel">0</b></div>
+      </div>
+
+      <div class="card">
+        <h2>Attendance by day</h2>
+        <p class="muted" style="margin-top:-6px; font-size:.88rem">Scanned counts each guest once a day. Add the people who came without being scanned (for example by bus) to get the day's total. A saved bus count is final and cannot be changed.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Day</th><th>Scanned</th><th>By bus</th><th>Total</th></tr></thead>
+            <tbody id="dayRows"></tbody>
+          </table>
+        </div>
+        <p class="error" id="dayError"></p>
+      </div>
+
+      <div class="card">
+        <h2>Statistics · <span lang="ar">الإحصائيات</span></h2>
+        <div class="stats" id="statTiles" style="margin-bottom:8px"></div>
+        <div class="muted small-text" id="statBusiest"></div>
+        <p class="error" id="statError"></p>
       </div>
 
       <div class="card">
@@ -330,7 +349,44 @@
     $('#orgError').textContent = '';
     show('eventView');
     loadOrganisers();
+    loadAttendance();
     await loadTickets();
+  }
+
+  // One row per event day: scanned guests, the bus count (editable, also once ended), total.
+  async function loadAttendance() {
+    $('#dayError').textContent = '';
+    const { data, error } = await db.rpc('invite_event_attendance', { p_event_id: current.id });
+    if (error) { $('#dayError').textContent = errText(error); return; }
+    const fmtDay = (d) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+    const sum = (k) => data.reduce((n, r) => n + Number(r[k]), 0);
+    $('#dayRows').innerHTML = data.map((r) => `<tr data-day="${r.day}">
+        <td>${esc(fmtDay(r.day))}</td>
+        <td>${r.scanned}</td>
+        <td>${r.saved ? `${r.bus_count} <small class="muted">saved</small>`
+          : `<div class="row"><input type="number" min="0" step="1" placeholder="0" style="width:100px">
+          <button class="small" data-act="bus">Save</button></div>`}</td>
+        <td><b>${r.total}</b></td>
+      </tr>`).join('')
+      + (data.length > 1 ? `<tr><td><b>All days</b></td><td>${sum('scanned')}</td><td>${sum('bus_count')}</td><td><b>${sum('total')}</b></td></tr>` : '');
+    loadStats();
+  }
+
+  async function loadStats() {
+    $('#statError').textContent = '';
+    const { data: s, error } = await db.rpc('invite_event_stats', { p_event_id: current.id });
+    if (error) { $('#statError').textContent = errText(error); return; }
+    const pct = (n) => (s.going ? ` <small class="muted">${Math.round((n / s.going) * 100)}%</small>` : '');
+    const tile = (label, value) => `<div class="stat"><span class="muted">${label}</span><b>${value}</b></div>`;
+    $('#statTiles').innerHTML = [
+      tile('Scanned at least once', s.scanned + pct(s.scanned)),
+      s.event_days > 1 ? tile('Came every day', s.every_day + pct(s.every_day)) : '',
+      tile('Never scanned', (s.going - s.scanned) + pct(s.going - s.scanned)),
+      tile('By bus, all days', s.bus),
+    ].join('');
+    const hour = (h) => String(h).padStart(2, '0') + ':00';
+    $('#statBusiest').innerHTML = s.busiest.map((b) => `Busiest hour ${esc(new Date(b.day + 'T12:00:00Z')
+      .toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }))}: <b>${hour(b.hour)}–${hour(b.hour + 1)}</b> (${b.count} scanned)`).join('<br>');
   }
 
   async function loadTickets() {
@@ -499,7 +555,7 @@
   $('#editBtn').onclick = () => openEditor(current);
   document.querySelectorAll('[data-back]').forEach((b) => { b.onclick = () => { show('listView'); loadEvents(); }; });
   $('#eventGrid').onclick = (e) => { const card = e.target.closest('.event-card'); if (card) openEvent(card.dataset.id); };
-  $('#refreshBtn').onclick = loadTickets;
+  $('#refreshBtn').onclick = () => { loadAttendance(); loadTickets(); };
   $('#search').oninput = render;
   $('#exportBtn').onclick = exportCsv;
 
@@ -586,6 +642,21 @@
     if (error) { alert(errText(error)); btn.disabled = false; return; }
     btn.textContent = `Sent ${data} ✓`;
     setTimeout(() => { btn.textContent = 'Email all'; btn.disabled = false; }, 5000);
+  };
+
+  $('#dayRows').onclick = async (e) => {
+    const btn = e.target.closest('button[data-act="bus"]');
+    if (!btn) return;
+    const tr = btn.closest('tr');
+    const count = Number($('input', tr).value);
+    $('#dayError').textContent = '';
+    if (!Number.isInteger(count) || count < 0) { $('#dayError').textContent = errText({ message: 'bad_count' }); return; }
+    if (!confirm(`Save ${count} by bus for ${tr.cells[0].textContent}? It cannot be changed afterwards.`)) return;
+    btn.disabled = true;
+    const { error } = await db.rpc('invite_set_bus_count', { p_event_id: current.id, p_day: tr.dataset.day, p_count: count });
+    btn.disabled = false;
+    if (error) { $('#dayError').textContent = errText(error); return; }
+    loadAttendance();
   };
 
   $('#rows').onclick = async (e) => {

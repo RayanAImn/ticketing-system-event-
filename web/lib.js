@@ -66,6 +66,9 @@
     event_closed: 'This event has ended, so it can no longer be changed.',
     cannot_remove_self: 'You cannot remove yourself.',
     organiser_not_found: 'This organiser was already removed.',
+    bad_count: 'Enter a whole number, 0 or more.',
+    bus_count_saved: 'This day\'s bus count is already saved and cannot be changed.',
+    bad_day: 'That day is not one of this event\'s days.',
     could_not_create_account: 'Could not create an account for this email. Try again.',
   };
   // A request that reaches the database without a signed-in user means this

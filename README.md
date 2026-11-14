@@ -27,6 +27,12 @@ Every function only works on events with `invite_managed = true`, so visit app e
 
 Once an event has ended (its end time, or its start time when it has no end, has passed) it is **closed**: the organiser page for it is read only (no editing or deleting the event, no adding, cancelling, re-linking or emailing guests, no adding or removing organisers), and its tickets show and scan as **expired**. The database enforces this, not just the page. A database set up before this change runs `supabase/migrations/0009_closed_events.sql` once.
 
+**Daily attendance.** A ticket checks in **once per day** (Riyadh time): on the second day of an event the same QR checks in again, and only a second scan on the same day says "Already used". The ticket's check-in time stays the first one. The event page has an **Attendance by day** table: for each day, the guests scanned, a **By bus** count the organiser types in for people who came without being scanned, and the total. Bus counts can still be entered after the event has ended. A saved bus count is final: the page shows it as text and the database refuses any change (`bus_count_saved`). A database set up before this change runs `supabase/migrations/0010_daily_attendance.sql` and then `supabase/migrations/0013_lock_bus_counts.sql` once.
+
+**Statistics.** Under it, a **Statistics · الإحصائيات** card shows guests scanned at least once, guests who came every day (events of more than one day), guests never scanned, the bus counts added up, and each day's busiest hour. A database set up before this change runs `supabase/migrations/0011_event_stats.sql` once.
+
+**Expired tickets are saved.** A pg_cron job (`invite-expire-tickets`, every 5 minutes) saves the active tickets of this site's ended events as `expired` in the table, so visit's dashboard and any export show them as expired too. Checked-in and cancelled tickets, and visit app tickets, are left as they are. A database set up before this change runs `supabase/migrations/0012_expire_tickets.sql` once.
+
 ## Setup (one time)
 
 1. **Run the SQL.** Paste `supabase/migrations/0001_invite_tickets.sql` into the SQL editor (https://supabase.com/dashboard/project/vdsuwbpvpdzdmmexmgzz/sql/new) and run it.
@@ -73,7 +79,7 @@ Then open `http://localhost:5173/?demo`.
 
 - **Email function** (offline; nothing is sent): `npm install`, then `npm run test:email`.
 - **Wallet pass** (offline; needs Deno and openssl): `npm run test:wallet`. Builds a pass with a throwaway certificate and checks its signature with openssl.
-- **Database** (`supabase/tests/invite_tickets_test.sql`, pgTAP, 185 checks): run against a local copy of visit's database in Docker. Everything runs in one transaction that is rolled back.
+- **Database** (`supabase/tests/invite_tickets_test.sql`, pgTAP, 215 checks): run against a local copy of visit's database in Docker. Everything runs in one transaction that is rolled back.
   1. Start Docker Desktop.
   2. Make a folder outside visit-app with a `supabase/` folder holding a copy of visit-app's `supabase/config.toml`. Change its `project_id` and ports, and remove the `[functions.*]` sections.
   3. Copy in visit-app's `supabase/migrations/*`, then add `supabase/migrations/0001_invite_tickets.sql` as the newest migration and this test into `supabase/tests/database/`.

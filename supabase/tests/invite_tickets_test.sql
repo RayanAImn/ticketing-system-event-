@@ -525,5 +525,82 @@ select is((select status from public.tickets where id = (select v::uuid from ids
 select results_eq($$ select status, qr_token from public.invite_get_ticket((select v from ids where k = 'ava_link')) $$,
   $$ values ('expired'::text, null::text) $$, 'guest sees an expired ticket with no QR');
 
+-- ---------------------------------------------------------------- daily attendance
+
+-- A three-day event that is on today; Dan checked in yesterday.
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
+set local role authenticated;
+select lives_ok($$ insert into ids select 'multi', public.invite_save_event(null, pg_temp.event_json('{"name":"Three days","capacity":""}'))::text $$, 'multi-day event');
+select lives_ok($$ select public.invite_create_tickets((select v::uuid from ids where k = 'multi'), '[{"name":"Dan"},{"name":"Eve"}]'::jsonb) $$, 'its guests');
+reset role;
+update public.events set starts_at = now() - interval '1 day', ends_at = now() + interval '1 day'
+where id = (select v::uuid from ids where k = 'multi');
+insert into ids select 'dan_qr', qr_token from public.tickets where guest_name = 'Dan';
+insert into ids select 'eve_qr', qr_token from public.tickets where guest_name = 'Eve';
+update public.tickets set status = 'redeemed', redeemed_at = now() - interval '1 day' where guest_name = 'Dan';
+insert into public.ticket_scans (ticket_id, scanned_by, scan_status, scanned_at)
+select id, '10000000-0000-0000-0000-0000000000a2', 'ticket_redeemed', now() - interval '1 day' from public.tickets where guest_name = 'Dan';
+
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a2', true);
+set local role authenticated;
+select is((select status from public.invite_scan_ticket((select v from ids where k = 'dan_qr'))), 'ticket_redeemed', 'checked in yesterday: in again today');
+select is((select status from public.invite_scan_ticket((select v from ids where k = 'dan_qr'))), 'ticket_already_redeemed', 'second scan the same day = already used');
+select is((select status from public.invite_scan_ticket((select v from ids where k = 'eve_qr'))), 'ticket_redeemed', 'first check-in today');
+select is((select status from public.invite_scan_ticket((select v from ids where k = 'eve_qr'))), 'ticket_already_redeemed', 'first check-in today, scanned again');
+select throws_ok($$ select public.invite_event_attendance((select v::uuid from ids where k = 'multi')) $$, null::char(5), 'not_admin', 'scanner cannot read attendance');
+select throws_ok($$ select public.invite_set_bus_count((select v::uuid from ids where k = 'multi'), current_date, 5) $$, null::char(5), 'not_admin', 'scanner cannot set the bus count');
+reset role;
+select is((select redeemed_at::date from public.tickets where guest_name = 'Dan'), (now() - interval '1 day')::date, 'first check-in time is kept');
+insert into ids select 'past_day', (starts_at at time zone 'Asia/Riyadh')::date::text from public.events where id = (select v::uuid from ids where k = 'past');
+
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
+set local role authenticated;
+select lives_ok($$ select public.invite_set_bus_count((select v::uuid from ids where k = 'multi'), (now() at time zone 'Asia/Riyadh')::date, 7) $$, 'bus count for today');
+select throws_ok($$ select public.invite_set_bus_count((select v::uuid from ids where k = 'multi'), (now() at time zone 'Asia/Riyadh')::date, 5) $$,
+  null::char(5), 'bus_count_saved', 'a saved bus count cannot be changed');
+select results_eq($$ select scanned, bus_count, total, saved from public.invite_event_attendance((select v::uuid from ids where k = 'multi')) $$,
+  $$ values (1::bigint, 0, 1::bigint, false), (2::bigint, 7, 9::bigint, true), (0::bigint, 0, 0::bigint, false) $$, 'attendance per day: yesterday, today, tomorrow');
+select throws_ok($$ select public.invite_set_bus_count((select v::uuid from ids where k = 'multi'), (now() at time zone 'Asia/Riyadh')::date + 5, 1) $$,
+  null::char(5), 'bad_day', 'only the event''s own days');
+select throws_ok($$ select public.invite_set_bus_count((select v::uuid from ids where k = 'multi'), (now() at time zone 'Asia/Riyadh')::date, -1) $$,
+  null::char(5), 'bad_count', 'no negative count');
+select lives_ok($$ select public.invite_set_bus_count((select v::uuid from ids where k = 'past'), (select v::date from ids where k = 'past_day'), 3) $$,
+  'bus count can be entered after the event has ended');
+reset role;
+select is((select status from public.tickets where guest_name = 'Eve'), 'redeemed', 'first check-in marks the ticket redeemed');
+
+-- Statistics: Dan came yesterday and today, Eve today; 7 by bus today.
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
+set local role authenticated;
+select is((select s - 'busiest' from public.invite_event_stats((select v::uuid from ids where k = 'multi')) s),
+  '{"going": 2, "scanned": 2, "event_days": 3, "every_day": 0, "bus": 7}'::jsonb, 'event statistics');
+select is((select jsonb_array_length(s->'busiest') from public.invite_event_stats((select v::uuid from ids where k = 'multi')) s), 2, 'a busiest hour for each day with scans');
+select is((select (s->'busiest'->1->>'count')::int from public.invite_event_stats((select v::uuid from ids where k = 'multi')) s), 2, 'today''s busiest hour has both guests');
+reset role;
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a2', true);
+set local role authenticated;
+select throws_ok($$ select public.invite_event_stats((select v::uuid from ids where k = 'multi')) $$, null::char(5), 'not_admin', 'scanner cannot read statistics');
+reset role;
+
+-- ---------------------------------------------------------------- ended events: tickets saved as expired
+
+select ok(exists (select 1 from cron.job where jobname = 'invite-expire-tickets'), 'expiry job is scheduled');
+update public.events set starts_at = now() - interval '1 day' where id = '20000000-0000-0000-0000-000000000001'; -- visit app event, also ended
+select is(public.invite_expire_ended_tickets() >= 2, true, 'the ended event''s active tickets are expired');
+select results_eq($$ select status from public.tickets where guest_name in ('Ava', 'Ben') order by guest_name $$,
+  $$ values ('expired'::text), ('expired'::text) $$, 'Ava and Ben saved as expired');
+select is((select status from public.tickets where guest_name = 'Dan'), 'redeemed', 'checked-in ticket of a running event untouched');
+select is((select count(*) from public.tickets t join public.events e on e.id = t.event_id
+           where t.status = 'expired' and coalesce(e.ends_at, e.starts_at) > now())::int, 0, 'no ticket of a running event expired');
+select is((select status from public.tickets where id = '30000000-0000-0000-0000-000000000001'), 'active', 'visit app ticket untouched');
+select is(public.invite_expire_ended_tickets(), 0, 'running it again changes nothing');
+select set_config('request.jwt.claim.sub', '10000000-0000-0000-0000-0000000000a1', true);
+set local role authenticated;
+select throws_ok($$ select public.invite_expire_ended_tickets() $$, '42501', null, 'organisers cannot call it');
+select results_eq($$ select distinct status from public.invite_list_tickets((select v::uuid from ids where k = 'past')) $$,
+  $$ values ('expired'::text) $$, 'organiser page still shows them as expired');
+select is((select status from public.invite_scan_ticket((select v from ids where k = 'ava_qr'))), 'ticket_expired', 'expired ticket refused at the gate');
+reset role;
+
 select * from finish();
 rollback;

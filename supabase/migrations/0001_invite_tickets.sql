@@ -958,9 +958,182 @@ as $$
     and length(p_link_token) >= 32;
 $$;
 
+-- ---------------------------------------------------------------- organiser: daily attendance
+
+-- For each event day, how many came without being scanned (by bus). Organisers
+-- enter it on the event page, also after the event has ended. A saved count is
+-- final: it cannot be changed (bus_count_saved).
+drop function if exists public.invite_event_attendance(uuid);
+create table if not exists public.invite_attendance_counts (
+  event_id   uuid not null references public.events (id) on delete cascade,
+  day        date not null,
+  bus_count  integer not null check (bus_count >= 0),
+  updated_by uuid references auth.users (id) on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (event_id, day)
+);
+alter table public.invite_attendance_counts enable row level security;
+revoke all on table public.invite_attendance_counts from anon, authenticated;
+
+-- The calendar days (Riyadh) from an event's start to its end.
+create or replace function public.invite_event_days(p_event_id uuid)
+returns setof date
+language sql
+stable
+security definer
+set search_path to ''
+as $$
+  select d::date
+  from public.events e,
+       generate_series((e.starts_at at time zone 'Asia/Riyadh')::date,
+                       (coalesce(e.ends_at, e.starts_at) at time zone 'Asia/Riyadh')::date,
+                       interval '1 day') d
+  where e.id = p_event_id and e.invite_managed;
+$$;
+
+-- One row per event day: different tickets scanned in that day, the bus count
+-- entered for it, and the two added up.
+create or replace function public.invite_event_attendance(p_event_id uuid)
+returns table (
+  day       date,
+  scanned   bigint,
+  bus_count integer,
+  total     bigint,
+  saved     boolean
+)
+language plpgsql
+stable
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+begin
+  perform public.invite_require_event(p_event_id);
+  if not exists (select 1 from public.events e where e.id = p_event_id and e.invite_managed) then
+    raise exception 'event_not_found';
+  end if;
+  return query
+  with scans as (
+    select (s.scanned_at at time zone 'Asia/Riyadh')::date as d, count(distinct s.ticket_id) as n
+    from public.ticket_scans s
+    join public.tickets t on t.id = s.ticket_id
+    where t.event_id = p_event_id
+      and s.scan_status in ('ticket_redeemed', 'ticket_already_redeemed')
+    group by 1
+  ), days as (
+    select x as d from public.invite_event_days(p_event_id) x
+    union select scans.d from scans
+    union select c.day from public.invite_attendance_counts c where c.event_id = p_event_id
+  )
+  select days.d, coalesce(scans.n, 0), coalesce(c.bus_count, 0),
+         coalesce(scans.n, 0) + coalesce(c.bus_count, 0), c.event_id is not null
+  from days
+  left join scans on scans.d = days.d
+  left join public.invite_attendance_counts c on c.event_id = p_event_id and c.day = days.d
+  order by 1;
+end;
+$$;
+
+create or replace function public.invite_set_bus_count(p_event_id uuid, p_day date, p_count integer)
+returns void
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+begin
+  perform public.invite_require_event(p_event_id);
+  if p_count is null or p_count < 0 then raise exception 'bad_count'; end if;
+  if p_day is null or p_day not in (select public.invite_event_days(p_event_id)) then
+    raise exception 'bad_day';
+  end if;
+  insert into public.invite_attendance_counts (event_id, day, bus_count, updated_by, updated_at)
+  values (p_event_id, p_day, p_count, auth.uid(), now())
+  on conflict (event_id, day) do nothing;
+  if not found then raise exception 'bus_count_saved'; end if;
+end;
+$$;
+
+-- Statistics card on the event page: going, scanned, every day, bus, busiest hour.
+create or replace function public.invite_event_stats(p_event_id uuid)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+declare
+  v_stats jsonb;
+begin
+  perform public.invite_require_event(p_event_id);
+  if not exists (select 1 from public.events e where e.id = p_event_id and e.invite_managed) then
+    raise exception 'event_not_found';
+  end if;
+  with live as (
+    select t.id from public.tickets t
+    where t.event_id = p_event_id and t.guest_name is not null and t.status <> 'cancelled'
+  ), sc as (
+    -- Each guest once per day, at their first scan that day.
+    select s.ticket_id, (s.scanned_at at time zone 'Asia/Riyadh')::date as d,
+           min(s.scanned_at at time zone 'Asia/Riyadh') as first_at
+    from public.ticket_scans s
+    join live on live.id = s.ticket_id
+    where s.scan_status in ('ticket_redeemed', 'ticket_already_redeemed')
+    group by 1, 2
+  ), per_ticket as (
+    select sc.ticket_id, count(*) as days from sc group by 1
+  ), hours as (
+    select sc.d, extract(hour from sc.first_at)::int as h, count(*) as n,
+           row_number() over (partition by sc.d order by count(*) desc, extract(hour from sc.first_at)) as rk
+    from sc group by sc.d, extract(hour from sc.first_at)
+  ), ev as (
+    select count(*) as days from public.invite_event_days(p_event_id)
+  )
+  select jsonb_build_object(
+    'going',      (select count(*) from live),
+    'scanned',    (select count(*) from per_ticket),
+    'event_days', (select days from ev),
+    'every_day',  (select count(*) from per_ticket where per_ticket.days >= (select days from ev)),
+    'bus',        (select coalesce(sum(c.bus_count), 0) from public.invite_attendance_counts c where c.event_id = p_event_id),
+    'busiest',    coalesce((select jsonb_agg(jsonb_build_object('day', hours.d, 'hour', hours.h, 'count', hours.n) order by hours.d)
+                            from hours where hours.rk = 1), '[]'::jsonb)
+  ) into v_stats;
+  return v_stats;
+end;
+$$;
+
+-- ---------------------------------------------------------------- ended events: tickets expired
+
+-- Every 5 minutes (pg_cron job below) the active tickets of this site's ended
+-- events are saved as expired, so visit's dashboard and exports see it too.
+create or replace function public.invite_expire_ended_tickets()
+returns integer
+language plpgsql
+security definer
+set search_path to ''
+set row_security to 'off'
+as $$
+declare
+  v_count integer;
+begin
+  update public.tickets t
+     set status = 'expired'
+    from public.events e
+   where e.id = t.event_id
+     and e.invite_managed
+     and coalesce(e.ends_at, e.starts_at) <= now()
+     and t.status = 'active'
+     and t.guest_name is not null;
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
+
 -- ---------------------------------------------------------------- scanner
 
 -- Same outcome codes as scan_ticket_qr and logs to the same ticket_scans table.
+-- A ticket checks in once per day (Asia/Riyadh); redeemed_at keeps the first check-in.
 -- Only tickets of this site's events are accepted; visit app tickets are invalid here.
 drop function if exists public.invite_scan_ticket(text, uuid);
 create or replace function public.invite_scan_ticket(p_qr_token text, p_event_id uuid default null)
@@ -984,6 +1157,7 @@ declare
   v_ticket     public.tickets;
   v_status     text;
   v_now        timestamptz := now();
+  v_today      date := (now() at time zone 'Asia/Riyadh')::date;
 begin
   if v_scanner_id is null then
     raise exception 'not_authenticated' using errcode = '42501';
@@ -1008,10 +1182,16 @@ begin
     v_status := 'wrong_event';
   elsif v_ticket.status = 'cancelled' then
     v_status := 'ticket_cancelled';
-  elsif v_ticket.status = 'redeemed' or v_ticket.redeemed_at is not null then
+  elsif (v_ticket.redeemed_at at time zone 'Asia/Riyadh')::date = v_today
+        or exists (select 1 from public.ticket_scans s
+                   where s.ticket_id = v_ticket.id and s.scan_status = 'ticket_redeemed'
+                     and (s.scanned_at at time zone 'Asia/Riyadh')::date = v_today) then
     v_status := 'ticket_already_redeemed';
   elsif v_ticket.status = 'expired' or public.invite_event_closed(v_ticket.event_id) then
     v_status := 'ticket_expired';
+  elsif v_ticket.status = 'redeemed' or v_ticket.redeemed_at is not null then
+    -- Checked in on an earlier day: in again today, first check-in kept.
+    v_status := 'ticket_redeemed';
   else
     update public.tickets
        set status = 'redeemed', redeemed_at = v_now, redeemed_by = v_scanner_id
@@ -1084,6 +1264,11 @@ revoke all on function public.invite_get_event(text)                       from 
 revoke all on function public.invite_register(text, text, text, text, text) from public;
 revoke all on function public.invite_get_ticket(text)                      from public;
 revoke all on function public.invite_scan_ticket(text, uuid)               from public, anon;
+revoke all on function public.invite_event_days(uuid)                      from public, anon, authenticated;
+revoke all on function public.invite_event_attendance(uuid)                from public, anon;
+revoke all on function public.invite_set_bus_count(uuid, date, integer)    from public, anon;
+revoke all on function public.invite_event_stats(uuid)                     from public, anon;
+revoke all on function public.invite_expire_ended_tickets()                from public, anon, authenticated;
 
 grant execute on function public.invite_staff_role()                          to authenticated;
 grant execute on function public.invite_assigned_only()                       to authenticated;
@@ -1104,3 +1289,11 @@ grant execute on function public.invite_get_event(text)                       to
 grant execute on function public.invite_register(text, text, text, text, text) to anon, authenticated;
 grant execute on function public.invite_get_ticket(text)                      to anon, authenticated;
 grant execute on function public.invite_scan_ticket(text, uuid)               to authenticated;
+grant execute on function public.invite_event_attendance(uuid)                to authenticated;
+grant execute on function public.invite_set_bus_count(uuid, date, integer)    to authenticated;
+grant execute on function public.invite_event_stats(uuid)                     to authenticated;
+
+-- ---------------------------------------------------------------- jobs
+
+-- Same name again replaces the job, so running this file twice is fine.
+select cron.schedule('invite-expire-tickets', '*/5 * * * *', 'select public.invite_expire_ended_tickets()');

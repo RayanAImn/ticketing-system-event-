@@ -33,6 +33,17 @@
     { id: 't5', event_id: 'e2', guest_name: 'Noura Alotaibi', guest_phone: null, guest_email: 'noura@example.com', guest_note: null, guest_staff_id: '9902', status: 'active' },
   ].map((t) => ({ ...t, link_token: hex(24), qr_token: hex(32), created_at: new Date().toISOString() }));
 
+  // The scan log and the bus count entered for each event day ('<event id> <day>').
+  const scans = tickets.filter((t) => t.redeemed_at).map((t) => ({ ticket_id: t.id, status: 'ticket_redeemed', at: t.redeemed_at }));
+  const busCounts = {};
+  const riyadhDay = (iso) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Riyadh' });
+  const eventDays = (e) => {
+    const days = [];
+    for (let d = riyadhDay(e.starts_at); d <= riyadhDay(e.ends_at || e.starts_at);
+      d = new Date(Date.parse(d + 'T12:00:00Z') + 864e5).toISOString().slice(0, 10)) days.push(d);
+    return days;
+  };
+
   const live = (e) => tickets.filter((t) => t.event_id === e.id && t.status !== 'cancelled').length;
   // Same rules as the database: an ended event is read only and its active tickets are expired.
   const ended = (e) => new Date(e.ends_at || e.starts_at) <= new Date();
@@ -87,6 +98,50 @@
       open(p_event_id);
       return tickets.filter((t) => t.event_id === p_event_id && t.status === 'active' && t.guest_email).length;
     },
+    invite_event_attendance: ({ p_event_id }) => {
+      const ids = new Set(tickets.filter((t) => t.event_id === p_event_id).map((t) => t.id));
+      const seen = scans.filter((s) => ids.has(s.ticket_id) && /redeemed$/.test(s.status));
+      const days = [...new Set([...eventDays(eventOf(p_event_id)), ...seen.map((s) => riyadhDay(s.at))])].sort();
+      return days.map((day) => {
+        const scanned = new Set(seen.filter((s) => riyadhDay(s.at) === day).map((s) => s.ticket_id)).size;
+        const saved = (p_event_id + ' ' + day) in busCounts;
+        const bus = busCounts[p_event_id + ' ' + day] || 0;
+        return { day, scanned, bus_count: bus, total: scanned + bus, saved };
+      });
+    },
+    invite_event_stats: ({ p_event_id }) => {
+      const live = new Set(tickets.filter((t) => t.event_id === p_event_id && t.status !== 'cancelled').map((t) => t.id));
+      const first = {}; // '<ticket> <day>' -> first scan that day
+      scans.filter((s) => live.has(s.ticket_id) && /redeemed$/.test(s.status)).forEach((s) => {
+        const k = s.ticket_id + ' ' + riyadhDay(s.at);
+        if (!first[k] || s.at < first[k]) first[k] = s.at;
+      });
+      const perTicket = {}, perHour = {};
+      Object.entries(first).forEach(([k, at]) => {
+        const [id, day] = k.split(' ');
+        perTicket[id] = (perTicket[id] || 0) + 1;
+        const h = new Date(at).toLocaleString('en-GB', { timeZone: 'Asia/Riyadh', hour: '2-digit', hourCycle: 'h23' });
+        perHour[day + ' ' + h] = (perHour[day + ' ' + h] || 0) + 1;
+      });
+      const days = eventDays(eventOf(p_event_id)).length;
+      const busiest = {};
+      Object.entries(perHour).sort().forEach(([k, n]) => {
+        const [day, h] = k.split(' ');
+        if (!busiest[day] || n > busiest[day].count) busiest[day] = { day, hour: +h, count: n };
+      });
+      return {
+        going: live.size, scanned: Object.keys(perTicket).length, event_days: days,
+        every_day: Object.values(perTicket).filter((n) => n >= days).length,
+        bus: Object.entries(busCounts).filter(([k]) => k.startsWith(p_event_id + ' ')).reduce((n, [, v]) => n + v, 0),
+        busiest: Object.values(busiest).sort((a, b) => (a.day < b.day ? -1 : 1)),
+      };
+    },
+    invite_set_bus_count: ({ p_event_id, p_day, p_count }) => {
+      if (!Number.isInteger(p_count) || p_count < 0) throw 'bad_count';
+      if (!eventDays(eventOf(p_event_id)).includes(p_day)) throw 'bad_day';
+      if ((p_event_id + ' ' + p_day) in busCounts) throw 'bus_count_saved';
+      busCounts[p_event_id + ' ' + p_day] = p_count;
+    },
     invite_get_event: ({ p_slug }) => events.filter((e) => e.slug === p_slug).map((e) => {
       const c = cities.find((x) => x.id === e.city_id) || {};
       return { ...e, city: c.name, city_ar: c.name_ar, spots_left: e.capacity == null ? null : Math.max(e.capacity - live(e), 0) };
@@ -109,12 +164,16 @@
       const t = tickets.find((x) => x.qr_token === p_qr_token.trim());
       const now = new Date().toISOString();
       if (!t) return [{ status: 'invalid_ticket', scanned_at: now }];
+      // Once per day: a ticket checked in on an earlier day of the event checks in again.
+      const today = riyadhDay(now);
       let status = 'ticket_redeemed';
       if (p_event_id && t.event_id !== p_event_id) status = 'wrong_event';
       else if (t.status === 'cancelled') status = 'ticket_cancelled';
-      else if (t.status === 'redeemed') status = 'ticket_already_redeemed';
+      else if ((t.redeemed_at && riyadhDay(t.redeemed_at) === today)
+        || scans.some((s) => s.ticket_id === t.id && s.status === 'ticket_redeemed' && riyadhDay(s.at) === today)) status = 'ticket_already_redeemed';
       else if (ended(eventOf(t.event_id))) status = 'ticket_expired';
-      else Object.assign(t, { status: 'redeemed', redeemed_at: now });
+      else if (t.status !== 'redeemed') Object.assign(t, { status: 'redeemed', redeemed_at: now });
+      scans.push({ ticket_id: t.id, status, at: now });
       return [{ status, ticket_id: t.id, guest_name: t.guest_name, staff_id: t.guest_staff_id, note: t.guest_note, redeemed_at: t.redeemed_at, scanned_at: now }];
     },
   };
@@ -122,9 +181,12 @@
   // Persist across page loads in this tab so a registration shows up on the admin page.
   try {
     const saved = JSON.parse(sessionStorage.getItem('demo-data') || 'null');
-    if (saved) { events.splice(0, events.length, ...saved.events); tickets.splice(0, tickets.length, ...saved.tickets); }
+    if (saved) {
+      events.splice(0, events.length, ...saved.events); tickets.splice(0, tickets.length, ...saved.tickets);
+      scans.splice(0, scans.length, ...(saved.scans || [])); Object.assign(busCounts, saved.busCounts);
+    }
   } catch { /* first visit */ }
-  const save = () => { try { sessionStorage.setItem('demo-data', JSON.stringify({ events, tickets })); } catch { /* ignore */ } };
+  const save = () => { try { sessionStorage.setItem('demo-data', JSON.stringify({ events, tickets, scans, busCounts })); } catch { /* ignore */ } };
 
   function rpc(name, args = {}) {
     let result;
